@@ -30,6 +30,8 @@ class Profile:
                 10**params_dict["log_P3"], params_dict["T3"])
         elif profile_type == "radiative_solution":
             self.set_from_radiative_solution(**params_dict)
+        elif profile_type == "npoint":
+            self.set_npoint(params_dict["T_array"])
         else:
             assert(False)
                                         
@@ -60,7 +62,18 @@ class Profile:
             else:
                 self.temperatures[i] = T3
         return P2, T2
-
+        
+    def set_npoint(self, T_array):
+        T_nodes = xp.asarray(T_array, dtype=float).ravel()
+        n = T_nodes.size
+        Pmin = float(xp.amin(self.pressures))
+        Pmax = float(xp.amax(self.pressures))
+        P_nodes = xp.logspace(xp.log10(Pmin), xp.log10(Pmax), n)
+        order = xp.argsort(P_nodes)
+        P_nodes = P_nodes[order]
+        T_nodes = T_nodes[order]  
+        self.set_from_arrays(P_nodes, T_nodes)
+    
     def set_from_opacity(self, T_irr, info_dict, visible_cutoff=0.8e-6, T_int=100):
         wavelengths = xp.array(info_dict["unbinned_wavelengths"])
         d_lambda = xp.diff(wavelengths)
