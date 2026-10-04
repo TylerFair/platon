@@ -5,6 +5,8 @@
 [![arXiv](http://img.shields.io/badge/arXiv-2004.09513-orange.svg)](https://arxiv.org/abs/2004.09513) 
 [![arXiv](http://img.shields.io/badge/arXiv-1811.11761-orange.svg)](https://arxiv.org/abs/1811.11761)
 
+**October 2026: PLATON can now model stellar contamination from unocculted spots and faculae, using NewEra stellar spectra interpolated in temperature, surface gravity, and metallicity, and can fit an offset for each instrument when combining datasets.  See [stellar contamination](docs/stellar_contamination.rst) and [instrument offsets](docs/instrument_offsets.rst).**
+
 **Feb 24, 2025: PLATON v6.3 is out!  The main difference from v6.2 is that we now include realistic emission from rocky surfaces using the emissivity library from [Paragas et al 2025](https://arxiv.org/abs/2502.04433).  The library contains 11 mineral compositions across 3 surface textures, and were obtained via lab reflectance measurements.**
 
 **Oct 30, 2024: PLATON v6.2 is out, with major updates!  This corresponds most closely to the version described in [Zhang et al 2024](https://arxiv.org/abs/2410.22398).  Major changes include GPU support, free retrievals, surface emission, higher-resolution (R=20k) and more up-to-date opacities, leave-one-out cross-validation, pymultinest, and much better plotting tools.**

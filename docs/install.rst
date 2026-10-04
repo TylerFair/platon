@@ -26,12 +26,23 @@ PLATON's base dependencies.  To add it::
 If PLATON is already installed, use ``pip install nautilus-sampler``.
 
 After installing PLATON, run one of the examples so that the data files are automatically downloaded::
+
   cd examples/
   python transit_depth_example.py
-  
+
+The NewEra stellar spectra used for stellar contamination (about 300 MB) are
+downloaded separately, the first time you pass stellar parameters such as
+``T_star`` (see :doc:`stellar_contamination`).  If your compute nodes have no
+internet access, download both sets of data once on a machine that does, such
+as a login node::
+
+  python -c "from platon.transit_depth_calculator import TransitDepthCalculator; TransitDepthCalculator()"
+  python -c "from platon.stellar_grid import download_stellar_grid; download_stellar_grid()"
+
 You can also run unit tests to make sure everything works::
-  
-  nosetests -v 
+
+  pip install pytest
+  python -m pytest tests
 
 The default data files (in platon/data) have a wavelength resolution of R=20k.
 If you want higher resolution, you can download higher-resolution opacities from the `DACE opacity database <https://dace.unige.ch/opacityDatabase>`_ and interpolate to PLATON's temperature and pressure grid.

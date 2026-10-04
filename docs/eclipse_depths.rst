@@ -29,17 +29,21 @@ Then, call the eclipse depth calculator::
   
 Most of the same parameters accepted by the transit depth calculator are also
 accepted by the eclipse depth calculator.  Surface emission can be included by
-passing surface_temp.  Only blackbody emission is supported at the moment, but
-non-blackbody emissivities (from new, state of the art lab data!) will be
-included in the next release (Paragas et al. 2024, in prep).
+passing surface_temp. Mineral emissivity models are also supported; see
+:doc:`surface_emission` for selecting a surface type and reflected/emitted flux.
+The stellar spectrum is taken from the NewEra grid; see
+:doc:`stellar_contamination` for the stellar parameters.
 
 It is also possible to retrieve on combined transit and eclipse depths::
 
   from platon.combined_retriever import CombinedRetriever
 
   retriever = CombinedRetriever()
-  fit_info = retriever.get_default_fit_info(Rs, Mp, Rp, T_limb,
-                 T0=1200, P1=500, alpha1=0.5, alpha2=0.6, P3=1e6, T3=1900)
+  import numpy as np
+  fit_info = retriever.get_default_fit_info(
+      Rs, Mp, Rp, T=T_limb, T_star=T_star,
+      profile_type="parametric", T0=1200, log_P1=np.log10(500),
+      alpha1=0.5, alpha2=0.6, log_P3=6, T3=1900)
 		 
   fit_info.add_uniform_fit_param(...)
   fit_info.add_uniform_fit_param(...)

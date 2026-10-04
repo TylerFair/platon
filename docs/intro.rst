@@ -18,6 +18,12 @@ The transit spectrum is calculated from 0.2 um to 30 um, taking into
 account gas absorption, H- absorption, collisionally induced absorption,
 clouds, and scattering.  The eclipse spectrum is calculated with the same physics included, but it does not include scattering as a source of emission; scattering is only included as a source of absorption.
 
+Transit spectra can include contamination from unocculted starspots and
+faculae, using NewEra stellar spectra interpolated in temperature, surface
+gravity, and metallicity (see :doc:`stellar_contamination`).  When combining
+data from several instruments, PLATON can fit an offset for each one (see
+:doc:`instrument_offsets`).
+
 The retrievers use TransitDepthCalculator/EclipseDepthCalculator as a forward
 model, and can retrieve atmospheric properties using either MCMC or nested
 sampling.  The speed of these retrievals is highly dependent on the wavelength
