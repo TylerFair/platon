@@ -7,6 +7,8 @@ import numpy as np
 from . import _forward_model as fm
 from ._forward_model import ForwardConfig, ForwardInputs
 from .constants import Teff_sun
+from ._stellar_grid import stellar_components
+from .errors import AtmosphereError
 
 
 def _pack_scalars(**kwargs):
@@ -29,18 +31,30 @@ def prepare_forward_inputs(atm, *, star_radius, planet_mass, planet_radius,
                            stellar_blackbody, bot_pressure,
                            min_abundance=1e-99, min_cross_sec=1e-99,
                            surface_pressure=np.inf, a_over_Rs=0.0,
-                           surface_temp=None, redist=0.0):
+                           surface_temp=None, redist=0.0, T_fac=None,
+                           fac_cov_frac=None, logg_phot=4.5, logg_spot=None,
+                           logg_fac=None, feh=0., stellar_grid_only=False,
+                           validate_T_grid=True):
     """Host-side preparation shared by the transit and eclipse calculators.
     Returns (ForwardConfig, ForwardInputs, host bookkeeping dict)."""
-    # bot_pressure is min(cloudtop_pressure, surface_pressure): the deepest
-    # level light can reach, which is what must lie within the pressure grid
-    atm._validate_params(T_profile, logZ, CO_ratio, bot_pressure)
-
+    for name, value in (('star_radius', star_radius), ('planet_mass', planet_mass),
+                        ('planet_radius', planet_radius)):
+        if not np.isfinite(value) or value <= 0:
+            raise AtmosphereError(f'{name} must be finite and positive')
     P_profile = np.asarray(P_profile, dtype=np.float64)
     T_profile = np.asarray(T_profile, dtype=np.float64)
-    if not np.all(np.diff(P_profile) > 0):
+    if (P_profile.ndim != 1 or len(P_profile) < 2 or
+            T_profile.shape != P_profile.shape):
+        raise ValueError("P_profile and T_profile must be matching 1D arrays with at least two layers")
+    if (not np.all(np.isfinite(P_profile)) or np.any(P_profile <= 0) or
+            not np.all(np.diff(P_profile) > 0)):
         raise ValueError(
-            "P_profile must be monotonically increasing in pressure")
+            "P_profile must be finite, positive, and monotonically increasing in pressure")
+
+    # bot_pressure is min(cloudtop_pressure, surface_pressure): the deepest
+    # level light can reach, which is what must lie within the pressure grid
+    atm._validate_params(T_profile, logZ, CO_ratio, bot_pressure,
+                         validate_T_grid=validate_T_grid)
 
     # Abundance mode
     vmrs_arr = None
@@ -65,11 +79,19 @@ def prepare_forward_inputs(atm, *, star_radius, planet_mass, planet_radius,
             active_species = list(custom_abundances.keys())
         elif vmrs is not None and gases is not None:
             abund_mode = "vmr"
+            vmrs_arr = np.asarray(vmrs, dtype=np.float64)
+            if not len(gases) or vmrs_arr.shape != (len(gases),):
+                raise ValueError("vmrs must have one value per gas")
+            if len(set(gases)) != len(gases):
+                raise ValueError("gases must not contain duplicate species")
+            if (np.any(~np.isfinite(vmrs_arr)) or np.any(vmrs_arr < 0) or
+                    np.any(vmrs_arr > 1) or not np.any(vmrs_arr > 0)):
+                raise ValueError("vmrs must be finite fractions between zero and one with a positive total")
             for gas in gases:
                 if gas not in atm.master_index:
                     raise ValueError("Unknown gas: {}".format(gas))
             gas_master_idx = tuple(int(atm.master_index[g]) for g in gases)
-            vmrs_arr = np.asarray(vmrs, dtype=np.float32)
+            vmrs_arr = vmrs_arr.astype(np.float32)
             active_species = list(gases)
         else:
             raise ValueError("Unrecognized format for custom_abundances")
@@ -100,16 +122,13 @@ def prepare_forward_inputs(atm, *, star_radius, planet_mass, planet_radius,
 
     n_above, shell_mask = atm.get_above_info(P_profile, bot_pressure)
 
-    if T_spot is None:
-        T_spot = T_star
-    if spot_cov_frac is None:
-        spot_cov_frac = 0.0
-
-    # Static stellar-spectrum branches (comparison in float32 to match what
-    # the device would compute)
-    stellar_temps = atm.raw["stellar_temps"]
-    stellar_in_grid = T_star is not None and not stellar_blackbody and \
-        stellar_temps[0] <= np.float32(T_star) <= stellar_temps[-1]
+    temps, gravities, fractions, in_grid = stellar_components(
+        atm.stellar_grid if T_star is not None and not stellar_blackbody else None,
+        T_star, T_spot, spot_cov_frac, T_fac, fac_cov_frac,
+        logg_phot, logg_spot, logg_fac, feh, stellar_blackbody, stellar_grid_only)
+    T_star, T_spot, T_fac = temps
+    logg_phot, logg_spot, logg_fac = gravities
+    spot_cov_frac, fac_cov_frac = fractions
 
     scalars = _pack_scalars(
         rs=star_radius, mp=planet_mass, rp=planet_radius,
@@ -124,6 +143,8 @@ def prepare_forward_inputs(atm, *, star_radius, planet_mass, planet_radius,
         t_star=0.0 if T_star is None else T_star,
         t_spot=0.0 if T_spot is None else T_spot,
         spot_frac=spot_cov_frac,
+        t_fac=0.0 if T_fac is None else T_fac, fac_frac=fac_cov_frac,
+        logg_phot=logg_phot, logg_spot=logg_spot, logg_fac=logg_fac, feh=feh,
         fsh=frac_scale_height, num_den=number_density,
         ln_min_xsec=math.log(min_cross_sec),
         log_min_abund=math.log10(min_abundance),
@@ -159,13 +180,24 @@ def prepare_forward_inputs(atm, *, star_radius, planet_mass, planet_radius,
         sort_layers=bool(T_profile.max() > T_profile.min()),
         use_mie=use_mie and add_scattering,
         has_t_star=T_star is not None,
-        stellar_in_grid=bool(stellar_in_grid),
+        stellar_in_grid=in_grid[0],
+        spot_in_grid=in_grid[1], fac_in_grid=in_grid[2],
+        has_faculae=fac_cov_frac != 0.0,
         has_spots=spot_cov_frac != 0.0,
     )
 
+    # Decode/interpolate only the selected vertices on the host. The full
+    # stellar cube never resides on the GPU; only three compact spectra do.
+    stellar_fluxes = None
+    if any(in_grid):
+        stellar_fluxes = np.zeros((3, len(atm.stellar_grid.wavelengths_m)), np.float32)
+        for i, use_grid in enumerate(in_grid):
+            if use_grid:
+                stellar_fluxes[i] = atm.stellar_grid.interpolate(temps[i], gravities[i], feh)
+
     inputs = ForwardInputs(
         packed=packed, vmrs=vmrs_arr, custom_log_abund=custom_log_abund,
-        eff_xsec=eff_xsec)
+        eff_xsec=eff_xsec, stellar_fluxes=stellar_fluxes)
 
     host = dict(n_above=n_above, active_species=active_species,
                 P_profile=P_profile, T_profile=T_profile)

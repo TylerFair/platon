@@ -3,6 +3,9 @@ __version__ = "7.0"
 __md5sum__ = "8a209c5acecef4805d64d2714587df2f"
 __data_url__ = "https://astro.uchicago.edu/~mz/data_{}.zip".format(__md5sum__)
 
+__stellar_grid_url__ = "https://github.com/TylerFair/platon/releases/download/newera-jwst-v1/newera_jwst_v1.zip"
+__stellar_grid_sha256__ = "e8093bae3d1ee5360a83fa18d9d0b6be30ff992c1c1bb8029b996d69e17f345b"
+
 # Capture small GPU kernel sequences into CUDA graphs (XLA's default
 # threshold is conservative); saves ~15% wall time per forward model by
 # eliminating kernel launch overhead.  Appended so user-set XLA_FLAGS win.

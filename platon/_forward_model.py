@@ -45,7 +45,8 @@ HC_OVER_KB = h * c / k_B
  SC_LOG10_P_QUENCH, SC_T_STAR, SC_T_SPOT, SC_SPOT_FRAC, SC_FSH, SC_NUM_DEN,
  SC_LN_MIN_XSEC, SC_LOG_MIN_ABUND, SC_REF_PRESSURE, SC_T_STAR_HYDRO,
  SC_MIE_REF_P, SC_SURFACE_P, SC_A_OVER_RS, SC_SURFACE_TEMP, SC_REDIST,
- SC_N_SCALARS) = range(27)
+ SC_T_FAC, SC_FAC_FRAC, SC_LOGG_PHOT, SC_LOGG_SPOT, SC_LOGG_FAC,
+ SC_FEH, SC_N_SCALARS) = range(33)
 
 # Indices into the packed int vector
 IX_FLOOR, IX_N_INTS = range(2)
@@ -78,16 +79,18 @@ class DeviceData(NamedTuple):
     cia_idx1: Any           # (K,) int32
     cia_idx2: Any           # (K,) int32
     ln_hminus_k: Any        # (NT, L): ln(H- k(T, lambda) / k_B)
-    stellar_temps: Any      # (NS,)
-    stellar_spectra: Any    # (NS, L)
     orig_lambda_grid: Any   # (L0,) full-resolution grid
-    orig_stellar_spectra: Any  # (NS, L0)
     exp3_x: Any             # (NE,) tau values for the E3 lookup table
     exp3_y: Any             # (NE,)
     bterm_x: Any            # (NB,) tau values for the bottom-boundary term
     bterm_y: Any            # (NB,) tau^2 E1(tau) - tau e^-tau + e^-tau
     bin_idx: Any            # (B, W) int32 gather indices per bin, or None
     bin_w: Any              # (B, W) 1/0 weights (0 marks padding), or None
+    stellar_lambdas: Any
+    stellar_wave_idx: Any
+    stellar_wave_frac: Any
+    orig_stellar_wave_idx: Any
+    orig_stellar_wave_frac: Any
 
 
 class ForwardConfig(NamedTuple):
@@ -105,16 +108,20 @@ class ForwardConfig(NamedTuple):
     sort_layers: bool        # non-isothermal profile: sort layers by cell
     use_mie: bool
     has_t_star: bool
-    stellar_in_grid: bool    # PHOENIX grid interp vs blackbody (host-known)
+    stellar_in_grid: bool    # stellar grid vs blackbody (host-known)
     has_spots: bool
     has_surface: bool = False
     surface_temp_given: bool = False
+    has_faculae: bool = False
+    spot_in_grid: bool = False
+    fac_in_grid: bool = False
 
 
 class ForwardInputs(NamedTuple):
     """Per-call inputs.  The small dense arrays (scalars, ints, T/P profiles,
     masks) are packed host-side into the single `packed` vector so each call
-    makes one host-to-device transfer instead of many; the cores unpack it
+    uses one host-to-device transfer for these arrays; stellar spectra are
+    transferred separately. The cores unpack it
     (cheap, fusable slices) via `unpack_inputs`.  Layout:
     [scalars (SC_N_SCALARS) | ints-as-floats (IX_N_INTS) | T_profile (N) |
      P_profile (N) | shell_mask (N-1) | opac_mask (S)]."""
@@ -126,6 +133,7 @@ class ForwardInputs(NamedTuple):
     rh_orig: Any = None     # (L0,)
     crust_flux: Any = None  # (NC2,)
     crust_T: Any = None     # (NC2,)
+    stellar_fluxes: Any = None  # (3, stellar wavelengths): host-interpolated vertices
 
 
 class UnpackedInputs(NamedTuple):
@@ -142,6 +150,7 @@ class UnpackedInputs(NamedTuple):
     rh_orig: Any = None
     crust_flux: Any = None
     crust_T: Any = None
+    stellar_fluxes: Any = None
 
 
 def pack_inputs(scalars, floor_idx, T_profile, P_profile, shell_mask,
@@ -478,35 +487,41 @@ def planck_np(lambda_grid, T):
     return TWO_H_C_SQR / lam ** 5 / np.expm1(HC_OVER_KB / (lam * T))
 
 
-def _stellar_spectrum(cfg, data, sc, orig=False):
-    """Stellar spectrum and spot correction factors on the wavelength grid.
-    Whether the PHOENIX grid or a blackbody is used, and whether spots are
-    present, are host-known and static, so only the needed branch is traced."""
+def _stellar_grid_spectrum(data, temperature, flux, orig=False):
+    """Resample a host-interpolated spectrum and extend its Planck tails."""
+    result = flux
+    idx = data.orig_stellar_wave_idx if orig else data.stellar_wave_idx
+    frac = data.orig_stellar_wave_frac if orig else data.stellar_wave_frac
+    spectrum = result[idx] * (1 - frac) + result[idx + 1] * frac
     lam = data.orig_lambda_grid if orig else data.lambda_grid
-    spectra = data.orig_stellar_spectra if orig else data.stellar_spectra
-    L = lam.shape[0]
+    waves = data.stellar_lambdas
+    # Continue with boundary-normalized Planck tails outside model coverage.
+    bb = math.pi * _planck(lam, temperature)
+    blue = bb * result[0] / (math.pi * _planck(waves[0], temperature))
+    red = bb * result[-1] / (math.pi * _planck(waves[-1], temperature))
+    return jnp.where(lam < waves[0], blue, jnp.where(lam > waves[-1], red, spectrum))
+
+
+def _stellar_spectrum(cfg, data, sc, orig=False, stellar_fluxes=None):
+    """Photosphere, spots, faculae, and their common-metallicity TLS factor."""
+    lam = data.orig_lambda_grid if orig else data.lambda_grid
     if not cfg.has_t_star:
-        ones = jnp.ones(L, dtype=jnp.float32)
+        ones = jnp.ones(lam.shape[0], dtype=jnp.float32)
         return ones, ones
 
-    T_star = sc[SC_T_STAR]
-    T_spot = sc[SC_T_SPOT]
-    f_spot = sc[SC_SPOT_FRAC]
+    def component(temperature, in_grid, index):
+        if in_grid:
+            return _stellar_grid_spectrum(data, temperature, stellar_fluxes[index], orig)
+        return math.pi * _planck(lam, temperature)
 
-    if cfg.stellar_in_grid:
-        unspotted = interp1d(T_star, data.stellar_temps, spectra)
-    else:
-        unspotted = math.pi * _planck(lam, T_star)
-    if not cfg.has_spots:
-        return unspotted, jnp.ones(L, dtype=jnp.float32)
-
-    if cfg.stellar_in_grid:
-        spot = interp1d(T_spot, data.stellar_temps, spectra)
-    else:
-        spot = math.pi * _planck(lam, T_spot)
-    spectrum = f_spot * spot + (1 - f_spot) * unspotted
-    correction_factors = unspotted / spectrum
-    return spectrum, correction_factors
+    phot = component(sc[SC_T_STAR], cfg.stellar_in_grid, 0)
+    f_spot, f_fac = sc[SC_SPOT_FRAC], sc[SC_FAC_FRAC]
+    spectrum = (1 - f_spot - f_fac) * phot
+    if cfg.has_spots:
+        spectrum += f_spot * component(sc[SC_T_SPOT], cfg.spot_in_grid, 1)
+    if cfg.has_faculae:
+        spectrum += f_fac * component(sc[SC_T_FAC], cfg.fac_in_grid, 2)
+    return spectrum, phot / spectrum
 
 
 def _bin_average(values, weights, data):
@@ -553,7 +568,7 @@ def _transit_core(cfg, data, pin):
     depths = (r_floor / Rs) ** 2 + \
         2.0 / Rs ** 2 * (absorption_fraction @ shell_w)
 
-    stellar, corr = _stellar_spectrum(cfg, data, sc)
+    stellar, corr = _stellar_spectrum(cfg, data, sc, stellar_fluxes=inp.stellar_fluxes)
     if data.bin_idx is not None:
         binned = _bin_average(depths * corr, stellar, data)
     else:
@@ -612,7 +627,7 @@ def _eclipse_core(cfg, data, pin):
     fluxes = fluxes + jnp.where(w_cloud, 1.0, 0.0) * \
         math.pi * planck_bot * bottom_term
 
-    stellar, _ = _stellar_spectrum(cfg, data, sc)
+    stellar, _ = _stellar_spectrum(cfg, data, sc, stellar_fluxes=inp.stellar_fluxes)
 
     surface_temp = jnp.float32(0.0)
     irrad = jnp.float32(0.0)
@@ -620,7 +635,7 @@ def _eclipse_core(cfg, data, pin):
         if cfg.surface_temp_given:
             surface_temp = sc[SC_SURFACE_TEMP]
         else:
-            stellar_orig, _ = _stellar_spectrum(cfg, data, sc, orig=True)
+            stellar_orig, _ = _stellar_spectrum(cfg, data, sc, orig=True, stellar_fluxes=inp.stellar_fluxes)
             irrad = sc[SC_REDIST] * jnp.trapezoid(
                 (1 - inp.rh_orig) * stellar_orig / sc[SC_A_OVER_RS] ** 2,
                 data.orig_lambda_grid)
@@ -720,7 +735,7 @@ def _transit_depths_dual(cfg, data, pin):
             tau_cloudy = tau_cloudy + \
                 (factor * pow_cloudy - pow_clear)[:, None] * v_ray[None, :]
 
-    stellar, corr = _stellar_spectrum(cfg, data, sc)
+    stellar, corr = _stellar_spectrum(cfg, data, sc, stellar_fluxes=inp.stellar_fluxes)
 
     def side_depths(tau_los, shell_mask, floor_idx):
         absorption_fraction = -jnp.expm1(-tau_los)

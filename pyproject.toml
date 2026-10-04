@@ -30,13 +30,18 @@ dependencies = [
     "setuptools",
     "configparser",
     "matplotlib",
+    "pandas",
+    "astropy",
 ]
 
 [project.optional-dependencies]
 nautilus = ["nautilus-sampler"]
+stellar-build = ["h5py"]
+test = ["pytest"]
 
 [project.urls]
 Homepage = "https://github.com/ideasrule/platon"
+Documentation = "https://platon.readthedocs.io"
 
 [tool.setuptools]
 include-package-data = true

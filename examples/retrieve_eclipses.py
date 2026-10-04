@@ -74,7 +74,7 @@ fit_info.add_uniform_fit_param("alpha", 0, 0.5)
 fit_info.add_uniform_fit_param("beta", 0, 2)
 
 #Nuisance parameters
-fit_info.add_gaussian_fit_param("offset_eclipse", 39e-6)
+fit_info.add_gaussian_fit_param("offset_eclipse", 39)
 
 #Use Nested Sampling to do the fitting
 result = retriever.run_dynesty(None, None, None,

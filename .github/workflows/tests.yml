@@ -1,0 +1,79 @@
+name: CPU regression and package checks
+
+on:
+  push:
+    branches: [jax_1d]
+  pull_request:
+    branches: [jax_1d]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cpu:
+    runs-on: ubuntu-latest
+    env:
+      JAX_PLATFORMS: cpu
+      OPENBLAS_NUM_THREADS: '1'
+      MPLBACKEND: Agg
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install development and documentation dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[test,stellar-build]'
+          python -m pip install -r docs/requirements.txt
+      - name: Stellar release checksum
+        id: stellar
+        run: echo "sha256=$(python -c 'from platon import __stellar_grid_sha256__; print(__stellar_grid_sha256__)')" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        with:
+          path: platon/stellar_data/*.npz
+          key: newera-jwst-${{ steps.stellar.outputs.sha256 }}
+      - name: Download stellar spectra once
+        run: python -c 'from platon.stellar_grid import download_stellar_grid; download_stellar_grid()'
+      - name: Offline regression suite
+        run: |
+          python -m pytest -q \
+            tests/test_stellar_grid.py tests/test_forward_validation.py \
+            tests/test_tls_workflows.py tests/test_sampler_integration.py \
+            tests/test_support_regressions.py \
+            tests/test_offsets.py tests/test_observations.py tests/test_params.py \
+            tests/test_TP_profiles.py tests/test_nautilus.py tests/test_get_data.py \
+            tests/test_two_sector.py tests/test_stellar_download.py \
+            -k 'not set_opacity and not TestTwoSectorForwardModel'
+          python -m pytest -q tests/test_mie.py -k test_lx_mie_values
+      - name: Build documentation
+        run: python -m sphinx -W -b html docs /tmp/platon-docs
+      - name: Build and verify the installed wheel
+        run: |
+          python -m pip wheel --no-deps --wheel-dir /tmp/platon-wheels .
+          python -m pip uninstall -y platon
+          python -m pip install --no-deps /tmp/platon-wheels/platon-*.whl
+          cd /tmp
+          python - <<'PY'
+          import sys
+          sys.modules['pymsg'] = None
+          sys.modules['h5py'] = None
+          from pathlib import Path
+          import platon
+          import sysconfig
+          package = Path(platon.__file__).resolve().parent
+          assert package.parent == Path(sysconfig.get_path('purelib')).resolve()
+          assert not (package / 'stellar_data/newera_jwst.npz').exists()
+          from platon.stellar_grid import generate_stellar_grid
+          from platon._stellar_grid import load_stellar_grid
+          grid = load_stellar_grid()
+          flux = grid.interpolate(2550., 5.5, .5)
+          assert (flux > 0).all()
+          assert len(grid.spectra.paths) == 10
+          assert all(path.is_file() for path in grid.spectra.paths)
+          cache = generate_stellar_grid('/tmp/installed-star.npz', logg=5.5, feh=.5)
+          assert load_stellar_grid(cache).valid.all()
+          print('Installed wheel: default NewEra TLS and cache generation passed')
+          PY

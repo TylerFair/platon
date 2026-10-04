@@ -18,6 +18,8 @@ from .constants import k_B
 from ._get_data import get_data_if_needed
 from ._mie_cache import MieCache
 from .errors import AtmosphereError
+from ._stellar_grid import (load_stellar_grid, resolve_stellar_grid,
+                            wavelength_brackets, stellar_components)
 
 # Data caches shared between calculator instances, so that constructing many
 # calculators doesn't repeatedly read gigabytes from disk or duplicate arrays
@@ -217,12 +219,6 @@ def _load_raw(method, include_opacities, downsample):
     np.maximum(ln_hminus_k, fm.LN_MIN_XSEC, out=ln_hminus_k)
     ln_hminus_k = ln_hminus_k.astype(np.float32)
 
-    stellar_dict = load_dict_from_pickle("data/stellar_spectra.pkl")
-    stellar_temps = np.asarray(stellar_dict["temperatures"], np.float64)
-    stellar_spectra = _interp_rows_to(
-        lambda_full, low_res_lambdas,
-        np.asarray(stellar_dict["spectra"])).astype(np.float32)
-
     exp3_x = np.logspace(-6, 3, 1000)
     exp3_y = scipy.special.expn(3, exp3_x)
 
@@ -244,7 +240,6 @@ def _load_raw(method, include_opacities, downsample):
         cia_idx1=cia_idx1, cia_idx2=cia_idx2,
         P_grid=P_grid, T_grid=T_grid,
         ln_hminus_k=ln_hminus_k,
-        stellar_temps=stellar_temps, stellar_spectra=stellar_spectra,
         exp3_x=exp3_x.astype(np.float32), exp3_y=exp3_y.astype(np.float32),
         bterm_x=bterm_x.astype(np.float32), bterm_y=bterm_y.astype(np.float32),
     )
@@ -273,7 +268,8 @@ def _get_log_abund_grid(include_condensation, abundance_getter, master_index):
 
 class AtmosphereSolver:
     def __init__(self, include_condensation=True, ref_pressure=1e5,
-                 method='xsec', include_opacities=[], downsample=1):
+                 method='xsec', include_opacities=[], downsample=1,
+                 stellar_grid='newera'):
         if method == "ktables":
             raise NotImplementedError(
                 "Correlated-k support has been removed from this JAX version "
@@ -293,7 +289,9 @@ class AtmosphereSolver:
         self.N_T = len(self.T_grid)
         self.N_P = len(self.P_grid)
 
-        self.stellar_spectra_temps = self.raw["stellar_temps"]
+        self._stellar_source = stellar_grid
+        self._stellar_grid = None
+        self._stellar_key = None
 
         self.wavelength_bins = None
 
@@ -323,6 +321,33 @@ class AtmosphereSolver:
         self._lambda_cond = None      # boolean mask into lambda_full
         self._bin_info = None
         self._device_data = None
+
+    @property
+    def stellar_grid(self):
+        if self._stellar_grid is None:
+            self.stellar_grid = load_stellar_grid(self._stellar_source)
+            path = resolve_stellar_grid(self._stellar_source)
+            stat = path.stat()
+            self._stellar_key = (str(path), stat.st_mtime_ns, stat.st_size)
+        return self._stellar_grid
+
+    @stellar_grid.setter
+    def stellar_grid(self, grid):
+        self._stellar_grid = grid
+        self._stellar_key = object()
+        self._device_data = None
+
+    @property
+    def stellar_spectra_temps(self):
+        return self.stellar_grid.temperatures
+
+    @property
+    def stellar_spectra_loggs(self):
+        return self.stellar_grid.loggs
+
+    @property
+    def stellar_spectra_fehs(self):
+        return self.stellar_grid.fehs
 
     # ------------------------------------------------------------------
     # Wavelength binning
@@ -416,7 +441,7 @@ class AtmosphereSolver:
 
         bins_key = None if self.wavelength_bins is None \
             else self.wavelength_bins.tobytes()
-        key = (self.raw["key"], self.include_condensation, bins_key)
+        key = (self.raw["key"], self.include_condensation, bins_key, self._stellar_key)
         if key in _DEVICE_CACHE:
             # Move to the end so the LRU eviction below treats it as fresh
             self._device_data = _DEVICE_CACHE.pop(key)
@@ -433,6 +458,10 @@ class AtmosphereSolver:
             self.master_index)
 
         lam = self.lambda_grid
+        grid = self._stellar_grid
+        waves = lam if grid is None else grid.wavelengths_m
+        wave_idx, wave_frac = wavelength_brackets(lam, waves)
+        orig_idx, orig_frac = wavelength_brackets(self.orig_lambda_grid, waves)
         dd = DeviceData(
             lambda_grid=jnp.asarray(lam, dtype=jnp.float32),
             lambda_um=jnp.asarray(lam * 1e6, dtype=jnp.float32),
@@ -451,10 +480,7 @@ class AtmosphereSolver:
             cia_idx1=jnp.asarray(raw["cia_idx1"]),
             cia_idx2=jnp.asarray(raw["cia_idx2"]),
             ln_hminus_k=jnp.asarray(raw["ln_hminus_k"][:, cond]),
-            stellar_temps=jnp.asarray(raw["stellar_temps"], dtype=jnp.float32),
-            stellar_spectra=jnp.asarray(raw["stellar_spectra"][:, cond]),
             orig_lambda_grid=jnp.asarray(raw["lambda_full"], dtype=jnp.float32),
-            orig_stellar_spectra=jnp.asarray(raw["stellar_spectra"]),
             exp3_x=jnp.asarray(raw["exp3_x"]),
             exp3_y=jnp.asarray(raw["exp3_y"]),
             bterm_x=jnp.asarray(raw["bterm_x"]),
@@ -463,6 +489,9 @@ class AtmosphereSolver:
                 else jnp.asarray(self._bin_info["bin_idx"]),
             bin_w=None if self._bin_info is None
                 else jnp.asarray(self._bin_info["bin_w"]),
+            stellar_lambdas=jnp.asarray(waves, dtype=jnp.float32),
+            stellar_wave_idx=jnp.asarray(wave_idx), stellar_wave_frac=jnp.asarray(wave_frac),
+            orig_stellar_wave_idx=jnp.asarray(orig_idx), orig_stellar_wave_frac=jnp.asarray(orig_frac),
         )
         _DEVICE_CACHE[key] = dd
         while len(_DEVICE_CACHE) > _DEVICE_CACHE_MAX_ENTRIES:
@@ -514,6 +543,8 @@ class AtmosphereSolver:
             if not isinstance(value, np.ndarray):
                 raise ValueError(
                     "custom_abundances must map species names to arrays")
+            if np.any(~np.isfinite(value)) or np.any(value < 0) or np.any(value > 1):
+                raise ValueError("custom_abundances must contain finite fractions between zero and one")
             with np.errstate(divide="ignore", invalid="ignore"):
                 logv = np.log10(value.astype(np.float64))
             logv = np.nan_to_num(logv, nan=fm.LOG_MIN_ABUND,
@@ -531,16 +562,23 @@ class AtmosphereSolver:
                         n_layers, self.N_T, self.N_P, value.shape, key))
         return result
 
-    def _validate_params(self, T_profile, logZ, CO_ratio, cloudtop_pressure):
-        T_profile = np.atleast_1d(np.asarray(T_profile, dtype=np.float64))
-        if T_profile.min() < self.min_temperature or \
-           T_profile.max() > self.max_temperature:
-            raise AtmosphereError("Invalid temperatures in T/P profile")
+    def _validate_params(self, T_profile, logZ, CO_ratio, cloudtop_pressure,
+                         validate_T_grid=True):
+        # T_profile is None when a retrieval uses a non-isothermal profile;
+        # those temperatures are checked once the profile is computed.
+        if T_profile is not None:
+            T_profile = np.atleast_1d(np.asarray(T_profile, dtype=np.float64))
+            if T_profile.size == 0 or not np.all(np.isfinite(T_profile)) or \
+               np.any(T_profile <= 0):
+                raise AtmosphereError("T/P profile temperatures must be finite and positive")
+            if validate_T_grid and (T_profile.min() < self.min_temperature or
+                                    T_profile.max() > self.max_temperature):
+                raise AtmosphereError("Invalid temperatures in T/P profile")
 
         if logZ is not None:
             minimum = float(self.abundance_getter.logZs.min())
             maximum = float(self.abundance_getter.logZs.max())
-            if logZ < minimum or logZ > maximum:
+            if not np.isfinite(logZ) or logZ < minimum or logZ > maximum:
                 raise ValueError(
                     "logZ {} is out of bounds ({} to {})".format(
                         logZ, minimum, maximum))
@@ -548,53 +586,59 @@ class AtmosphereSolver:
         if CO_ratio is not None:
             minimum = float(self.abundance_getter.CO_ratios.min())
             maximum = float(self.abundance_getter.CO_ratios.max())
-            if CO_ratio < minimum or CO_ratio > maximum:
+            if not np.isfinite(CO_ratio) or CO_ratio < minimum or CO_ratio > maximum:
                 raise ValueError(
                     "C/O ratio {} is out of bounds ({} to {})".format(
                         CO_ratio, minimum, maximum))
 
-        if not np.isinf(cloudtop_pressure):
+        if cloudtop_pressure != np.inf:
             minimum = float(self.P_grid.min())
             maximum = float(self.P_grid.max())
-            if cloudtop_pressure <= minimum or cloudtop_pressure > maximum:
+            if not np.isfinite(cloudtop_pressure) or cloudtop_pressure <= minimum or cloudtop_pressure > maximum:
                 raise ValueError(
                     "Cloudtop pressure is {} Pa, but must be between {} and "
                     "{} Pa unless it is np.inf".format(
                         cloudtop_pressure, minimum, maximum))
 
     def get_stellar_spectrum(self, T_star, T_spot, spot_cov_frac,
-                             blackbody=False, use_full_lambdas=False):
-        """Host (numpy) stellar spectrum, for non-JIT use."""
-        if use_full_lambdas:
-            lambdas = self.orig_lambda_grid
-            stellar_spectra = self.raw["stellar_spectra"]
-        else:
-            lambdas = self.lambda_grid
-            cond = self._lambda_cond
-            stellar_spectra = self.raw["stellar_spectra"] if cond is None \
-                else self.raw["stellar_spectra"][:, cond]
+                             blackbody=False, use_full_lambdas=False, *,
+                             T_fac=None, fac_cov_frac=None, logg_phot=4.5,
+                             logg_spot=None, logg_fac=None, feh=0.,
+                             stellar_grid_only=False):
+        """Host stellar spectrum and TLS correction, matching the JIT core.
 
-        if spot_cov_frac is None:
-            spot_cov_frac = 0
-
-        if T_spot is None:
-            T_spot = T_star
-
-        temps = self.stellar_spectra_temps
+        NewEra supplies 0.6--28.5 micron spectra. Beyond that range a Planck
+        tail, normalized at the nearest grid boundary, extends each component.
+        """
+        lambdas = self.orig_lambda_grid if use_full_lambdas else self.lambda_grid
+        temps, gravities, fractions, in_grid = stellar_components(
+            self.stellar_grid if T_star is not None and not blackbody else None,
+            T_star, T_spot, spot_cov_frac, T_fac,
+            fac_cov_frac, logg_phot, logg_spot, logg_fac, feh, blackbody,
+            stellar_grid_only)
         if T_star is None:
-            unspotted_spectrum = np.ones(len(lambdas))
-            spot_spectrum = np.ones(len(lambdas))
-        elif T_star >= temps.min() and T_star <= temps.max() and not blackbody:
-            unspotted_spectrum = interp1d_np(T_star, temps, stellar_spectra)
-            spot_spectrum = interp1d_np(T_spot, temps, stellar_spectra)
-        else:
-            unspotted_spectrum = np.pi * planck_np(lambdas, T_star)
-            spot_spectrum = np.pi * planck_np(lambdas, T_spot)
+            return np.ones(len(lambdas)), np.ones(len(lambdas))
 
-        stellar_spectrum = spot_cov_frac * spot_spectrum + \
-            (1 - spot_cov_frac) * unspotted_spectrum
-        correction_factors = unspotted_spectrum / stellar_spectrum
-        return stellar_spectrum, correction_factors
+        def component(i):
+            planck = np.pi * planck_np(lambdas, temps[i])
+            if not in_grid[i]:
+                return planck
+            flux = self.stellar_grid.interpolate(temps[i], gravities[i], feh)
+            waves = self.stellar_grid.wavelengths_m
+            result = np.interp(lambdas, waves, flux)
+            for boundary, value, outside in ((waves[0], flux[0], lambdas < waves[0]),
+                                              (waves[-1], flux[-1], lambdas > waves[-1])):
+                result[outside] = planck[outside] * value / (np.pi * planck_np(boundary, temps[i]))
+            return result
+
+        phot = component(0)
+        f_spot, f_fac = fractions
+        spectrum = (1 - f_spot - f_fac) * phot
+        if f_spot:
+            spectrum += f_spot * component(1)
+        if f_fac:
+            spectrum += f_fac * component(2)
+        return spectrum, phot / spectrum
 
     # ------------------------------------------------------------------
     # Mie scattering (host side; effective cross sections are passed into
@@ -682,7 +726,7 @@ class AtmosphereSolver:
         touches the JAX backend (which would break fork-based retrieval
         pools) and stays mutable for external callers."""
         result = np.asarray(result, dtype=np.float32)
-        if len(self._mie_eff_xsec_cache) > 64:
+        if len(self._mie_eff_xsec_cache) >= 64 and cache_key not in self._mie_eff_xsec_cache:
             self._mie_eff_xsec_cache.pop(next(iter(self._mie_eff_xsec_cache)))
         self._mie_eff_xsec_cache[cache_key] = result
         return result

@@ -15,9 +15,10 @@ class EclipseDepthCalculator:
     def __init__(self, include_condensation=True, method="xsec",
                  include_opacities=["CH4", "CO2", "CO", "H2O", "H2S", "HCN",
                                     "K", "Na", "NH3", "SO2", "TiO", "VO"],
-                 downsample=1, surface_library="Paragas"):
+                 downsample=1, surface_library="Paragas", stellar_grid='newera'):
         '''
-        All physical parameters are in SI.
+        Physical parameters use SI, except stellar logg (log10 cgs),
+        [Fe/H] (dex), and depth offsets (ppm).
 
         Parameters
         ----------
@@ -26,10 +27,13 @@ class EclipseDepthCalculator:
             account.
         method : string
             "xsec" for opacity sampling (correlated-k is no longer supported)
+        stellar_grid : str or pathlib.Path, optional
+            'newera' (default, downloaded on first use), 'phoenix', or a local
+            NPZ, pickle, or native HDF5 grid.
         '''
         self.atm = AtmosphereSolver(include_condensation, method=method,
                                     include_opacities=include_opacities,
-                                    downsample=downsample)
+                                    downsample=downsample, stellar_grid=stellar_grid)
         self.surface_library = surface_library
 
         if surface_library not in ["HES2012", "Paragas"]:
@@ -113,13 +117,34 @@ class EclipseDepthCalculator:
                        stellar_blackbody=False, full_output=False,
                        zero_opacities=[], surface_type=None,
                        semimajor_axis=None, surface_temp=None,
-                       surface_pressure=np.inf):
-        '''Most parameters are explained in :func:`~platon.transit_depth_calculator.TransitDepthCalculator.compute_depths`
+                       surface_pressure=np.inf, *, T_fac=None, fac_cov_frac=None,
+                       logg_phot=4.5, logg_spot=None, logg_fac=None, feh=0.,
+                       stellar_grid_only=False, validate_T_grid=True):
+        '''Compute eclipse depths using photosphere, spot, and facula spectra.
+
+        Physical parameters use SI, except stellar logg (log10 cgs),
+        [Fe/H] (dex), and depth offsets (ppm). Shared atmospheric parameters
+        are described by TransitDepthCalculator.compute_depths.
 
         Parameters
         ----------
         t_p_profile : Profile
             A Profile object from TP_profile
+        T_fac : float, optional
+            Facula effective temperature in K.
+        fac_cov_frac : float, optional
+            Facula area fraction. Spot and facula fractions sum to at most one.
+        logg_phot, logg_spot, logg_fac : float, optional
+            Log10 surface gravities in cgs. Photosphere defaults to 4.5;
+            spots and faculae inherit its gravity when omitted.
+        feh : float, optional
+            Shared stellar [Fe/H] in dex (default 0).
+        stellar_grid_only : bool, optional
+            Reject temperatures outside the stellar grid (default False).
+            Boundary-normalized Planck wavelength tails remain enabled.
+        validate_T_grid : bool, optional
+            Require atmospheric temperatures within the opacity grid (default
+            True). False clamps chemistry and opacity lookup at grid edges.
         '''
         T_profile = np.asarray(t_p_profile.temperatures, dtype=np.float64)
         P_profile = np.asarray(t_p_profile.pressures, dtype=np.float64)
@@ -150,6 +175,10 @@ class EclipseDepthCalculator:
             cloudtop_pressure=cloudtop_pressure,
             custom_abundances=custom_abundances, T_star=T_star, T_spot=T_spot,
             spot_cov_frac=spot_cov_frac, ri=ri,
+            T_fac=T_fac, fac_cov_frac=fac_cov_frac,
+            logg_phot=logg_phot, logg_spot=logg_spot,
+            logg_fac=logg_fac, feh=feh, stellar_grid_only=stellar_grid_only,
+            validate_T_grid=validate_T_grid,
             frac_scale_height=frac_scale_height,
             number_density=number_density, part_size=part_size,
             part_size_std=part_size_std, P_quench=P_quench,

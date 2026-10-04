@@ -27,7 +27,9 @@ class TestTwoSectorTypes(unittest.TestCase):
             T_irr, log_gamma, log_k_th, T_int, M_jup, R_jup)
 
         gamma = 10**log_gamma
-        tau = profile.pressures * (0.1 * 10**log_k_th) / \
+        # Pressure is in Pa and kappa is in m^2/kg, so P*kappa/g is
+        # dimensionless directly; no conversion from cm^2/g is needed.
+        tau = profile.pressures * 10**log_k_th / \
             (G * M_jup / R_jup**2)
         incoming = 2 / 3 + 2 / (3 * gamma) * (
             1 + (gamma * tau / 2 - 1) * np.exp(-gamma * tau))
@@ -77,10 +79,7 @@ class TestTwoSectorTypes(unittest.TestCase):
         self.assertEqual(fit_info._ln_prior([1500, 1000]), -np.inf)
 
     def test_retrieval_configuration(self):
-        try:
-            from platon.combined_retriever import CombinedRetriever
-        except ModuleNotFoundError as error:
-            self.skipTest(str(error))
+        from platon.combined_retriever import CombinedRetriever
         model = TwoSectorTerminator(
             TerminatorSector(isothermal(900), 1e3, 10, 6),
             TerminatorSector(isothermal(1400), 1e6, 1, 4))
@@ -193,10 +192,7 @@ class TestTwoSectorForwardModel(unittest.TestCase):
                     abundance[above], abundance[above][0], rtol=1e-5)
 
     def test_retrieval_likelihood_with_fixed_and_free_fraction(self):
-        try:
-            from platon.combined_retriever import CombinedRetriever
-        except ModuleNotFoundError as error:
-            self.skipTest(str(error))
+        from platon.combined_retriever import CombinedRetriever
 
         model = TwoSectorTerminator(
             TerminatorSector(isothermal(900), 1e3, 10, 6),

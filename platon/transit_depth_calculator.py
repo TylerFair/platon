@@ -13,9 +13,10 @@ class TransitDepthCalculator:
                  method='xsec',
                  include_opacities=["CH4", "CO2", "CO", "H2O", "H2S", "HCN",
                                     "K", "Na", "NH3", "SO2", "TiO", "VO"],
-                 downsample=1):
+                 downsample=1, stellar_grid='newera'):
         '''
-        All physical parameters are in SI.
+        Physical parameters use SI, except stellar logg (log10 cgs),
+        [Fe/H] (dex), and depth offsets (ppm).
 
         Parameters
         ----------
@@ -26,9 +27,13 @@ class TransitDepthCalculator:
             The planetary radius is defined as the radius at this pressure
         method : string
             "xsec" for opacity sampling (correlated-k is no longer supported)
+        stellar_grid : str or pathlib.Path, optional
+            'newera' (default), 'phoenix', or a custom NPZ/pickle/native HDF5
+            file. NewEra downloads on first use and needs no MSG installation.
         '''
         self.atm = AtmosphereSolver(include_condensation, ref_pressure,
-                                    method, include_opacities, downsample)
+                                    method, include_opacities, downsample,
+                                    stellar_grid=stellar_grid)
 
     def change_wavelength_bins(self, bins):
         """Specify wavelength bins, instead of using the full wavelength grid
@@ -45,8 +50,10 @@ class TransitDepthCalculator:
         """
         self.atm.change_wavelength_bins(bins)
 
-    def _validate_params(self, T, logZ, CO_ratio, cloudtop_pressure):
-        self.atm._validate_params(T, logZ, CO_ratio, cloudtop_pressure)
+    def _validate_params(self, T, logZ, CO_ratio, cloudtop_pressure,
+                         validate_T_grid=True):
+        self.atm._validate_params(T, logZ, CO_ratio, cloudtop_pressure,
+                                 validate_T_grid=validate_T_grid)
 
     def compute_depths(self, t_p_profile, star_radius, planet_mass,
                        planet_radius, logZ=0, CO_ratio=0.53, CH4_mult=1,
@@ -62,7 +69,9 @@ class TransitDepthCalculator:
                        part_size=1e-6, part_size_std=0.5, P_quench=1e-99,
                        full_output=False, min_abundance=1e-99,
                        min_cross_sec=1e-99, stellar_blackbody=False,
-                       zero_opacities=[]):
+                       zero_opacities=[], *, T_fac=None, fac_cov_frac=None,
+                       logg_phot=4.5, logg_spot=None, logg_fac=None, feh=0.,
+                       stellar_grid_only=False, validate_T_grid=True):
         '''
         Computes transit depths at a range of wavelengths.  To choose bins,
         call change_wavelength_bins().
@@ -143,6 +152,22 @@ class TransitDepthCalculator:
         spot_cov_frac : float, optional
             The spot covering fraction of the star by area. This can be used to
             make wavelength dependent correction to the transit depths.
+        T_fac, fac_cov_frac : float, optional
+            Facula temperature (K) and area fraction. Combined spot and facula
+            fractions must be nonnegative and sum to at most one.
+        logg_phot, logg_spot, logg_fac : float, optional
+            Stellar log10 gravity in cgs. Spots/faculae inherit logg_phot,
+            whose default is 4.5.
+        feh : float, optional
+            Stellar [Fe/H] in dex, shared by all components (default 0).
+        stellar_grid_only : bool, optional
+            Reject temperatures outside the stellar grid, rather than use
+            blackbody spectra. Boundary-normalized Planck wavelength tails
+            remain enabled outside the grid's wavelength coverage.
+        validate_T_grid : bool, optional
+            Require atmospheric temperatures to lie within the opacity grid.
+            If False, chemistry and opacity lookups clamp to grid edges while
+            hydrostatics retain the supplied positive, finite temperatures.
         ri : complex, optional
             Complex refractive index n - ik (where k > 0) of the particles
             responsible for Mie scattering.  If provided, Mie scattering will
@@ -165,7 +190,7 @@ class TransitDepthCalculator:
             Quench pressure in Pa.
         stellar_blackbody : bool, optional
             Whether to use a blackbody for the stellar spectrum instead of a
-            PHOENIX model
+            model from the selected stellar grid (NewEra by default)
         zero_opacities : list of strings
             List of molecules to zero opacities for
         full_output : bool, optional
@@ -204,6 +229,10 @@ class TransitDepthCalculator:
                 cloud_fraction=1, custom_abundances=custom_abundances,
                 T_star=T_star, T_spot=T_spot,
                 spot_cov_frac=spot_cov_frac, ri=ri,
+                T_fac=T_fac, fac_cov_frac=fac_cov_frac,
+                logg_phot=logg_phot, logg_spot=logg_spot,
+                logg_fac=logg_fac, feh=feh, stellar_grid_only=stellar_grid_only,
+                validate_T_grid=validate_T_grid,
                 frac_scale_height=frac_scale_height,
                 number_density=number_density, part_size=part_size,
                 part_size_std=part_size_std, P_quench=P_quench,
@@ -249,7 +278,7 @@ class TransitDepthCalculator:
         if not isinstance(t_p_profile, Profile):
             raise TypeError("t_p_profile must be a Profile object from "
                             "platon.TP_profile or a TwoSectorTerminator")
-        if cloud_fraction < 0 or cloud_fraction > 1:
+        if not np.isfinite(cloud_fraction) or cloud_fraction < 0 or cloud_fraction > 1:
             raise ValueError("cloud_fraction must be between 0 and 1")
         T_profile = np.asarray(t_p_profile.temperatures, dtype=np.float64)
         P_profile = np.asarray(t_p_profile.pressures, dtype=np.float64)
@@ -269,6 +298,10 @@ class TransitDepthCalculator:
             cloudtop_pressure=cloudtop_pressure,
             custom_abundances=custom_abundances, T_star=T_star, T_spot=T_spot,
             spot_cov_frac=spot_cov_frac, ri=ri,
+            T_fac=T_fac, fac_cov_frac=fac_cov_frac,
+            logg_phot=logg_phot, logg_spot=logg_spot,
+            logg_fac=logg_fac, feh=feh, stellar_grid_only=stellar_grid_only,
+            validate_T_grid=validate_T_grid,
             frac_scale_height=frac_scale_height,
             number_density=number_density, part_size=part_size,
             part_size_std=part_size_std, P_quench=P_quench,

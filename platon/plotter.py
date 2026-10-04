@@ -3,6 +3,7 @@ import numpy as np
 import corner
 from .constants import METRES_TO_UM, BAR_TO_PASCALS, R_jup
 from .retrieval_result import RetrievalResult
+from ._offsets import offset_labels
 from . TP_profile import Profile
 import numpy as _np
 import dynesty
@@ -63,6 +64,7 @@ class Plotter():
             indices = np.random.choice(len(equal_samples), num_samples)
             profile_pressures = _np.asarray(
                 terminator.cold.profile.pressures)
+            hot_pressures = _np.asarray(terminator.hot.profile.pressures)
             cold_temperatures = []
             hot_temperatures = []
             for index in indices:
@@ -78,11 +80,12 @@ class Plotter():
             cold_temperatures = np.asarray(cold_temperatures)
             hot_temperatures = np.asarray(hot_temperatures)
             pressure_bars = profile_pressures / BAR_TO_PASCALS
+            hot_pressure_bars = hot_pressures / BAR_TO_PASCALS
             plt.figure()
             if plot_samples:
                 plt.plot(cold_temperatures.T, pressure_bars, color="C0",
                          alpha=0.12, zorder=1)[0].set_label("cold samples")
-                plt.plot(hot_temperatures.T, pressure_bars, color="C3",
+                plt.plot(hot_temperatures.T, hot_pressure_bars, color="C3",
                          alpha=0.12, zorder=1)[0].set_label("hot samples")
             if plot_1sigma_bounds:
                 plt.fill_betweenx(
@@ -91,7 +94,7 @@ class Plotter():
                     np.percentile(cold_temperatures, 84, axis=0),
                     color="C0", alpha=0.25, label="cold 1$\\sigma$")
                 plt.fill_betweenx(
-                    pressure_bars,
+                    hot_pressure_bars,
                     np.percentile(hot_temperatures, 16, axis=0),
                     np.percentile(hot_temperatures, 84, axis=0),
                     color="C3", alpha=0.25, label="hot 1$\\sigma$")
@@ -101,10 +104,11 @@ class Plotter():
                 best_params_dict["Rp"])
             plt.plot(best.cold.profile.temperatures, pressure_bars,
                      color="C0", label="cold best fit")
-            plt.plot(best.hot.profile.temperatures, pressure_bars,
+            plt.plot(best.hot.profile.temperatures, hot_pressure_bars,
                      color="C3", label="hot best fit")
             plt.yscale("log")
-            plt.ylim(pressure_bars.min(), pressure_bars.max())
+            plt.ylim(min(pressure_bars.min(), hot_pressure_bars.min()),
+                     max(pressure_bars.max(), hot_pressure_bars.max()))
             plt.gca().invert_yaxis()
             plt.xlabel("Temperature (K)")
             plt.ylabel("Pressure/bars")
@@ -205,22 +209,21 @@ class Plotter():
         posteriors of the fitted parameters.
         """
         assert(isinstance(retrieval_result, RetrievalResult))
+        options = dict(labels=offset_labels(retrieval_result.fit_info.fit_param_names,
+                                           retrieval_result.fit_info))
         if retrieval_result.retrieval_type in ("dynesty", "nautilus"):
-            fig = corner.corner(retrieval_result.samples, weights=retrieval_result.weights,
-                                range=[0.99] * retrieval_result.samples.shape[1],
-                                show_titles=True,
-                                labels=retrieval_result.fit_info.fit_param_names, **args)
+            samples = retrieval_result.samples
+            options.update(weights=retrieval_result.weights, show_titles=True)
         elif retrieval_result.retrieval_type == "pymultinest":
-            fig = corner.corner(retrieval_result.equal_samples,
-                                range=[0.99] * retrieval_result.equal_samples.shape[1],
-                                show_titles=True,
-                                labels=retrieval_result.fit_info.fit_param_names, **args)                
+            samples = retrieval_result.equal_samples
+            options['show_titles'] = True
         elif retrieval_result.retrieval_type == "emcee":
-            fig = corner.corner(retrieval_result.flatchain,
-                                range=[0.99] * retrieval_result.flatchain.shape[1],
-                                labels=retrieval_result.fit_info.fit_param_names, **args)
+            samples = retrieval_result.flatchain
         else:
             assert(False)
+        options['range'] = [0.99] * samples.shape[1]
+        options.update(args)
+        fig = corner.corner(samples, **options)
 
         if filename is not None:
             fig.savefig(filename)
@@ -254,7 +257,7 @@ class Plotter():
                     retrieval_result.best_fit_transit_depths,
                     color='b', label="Calculated (binned)", zorder=4)                        
                             
-        plt.xlabel("Wavelength ($\mu m$)")
+        plt.xlabel(r"Wavelength ($\mu m$)")
         plt.ylabel("Transit depth")
         plt.xscale('log')
         plt.tight_layout()
@@ -290,7 +293,7 @@ class Plotter():
                     retrieval_result.best_fit_eclipse_depths,
                     color='r', label="Calculated (binned)")
         plt.legend()
-        plt.xlabel("Wavelength ($\mu m$)")
+        plt.xlabel(r"Wavelength ($\mu m$)")
         plt.ylabel("Eclipse depth")
         plt.xscale('log')
         plt.tight_layout()
