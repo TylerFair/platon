@@ -58,6 +58,8 @@ class AbundanceGetter:
     def is_in_bounds(self, logZ, CO_ratio, T):
         '''Check to see if a certain metallicity, C/O ratio, and temperature
         combination is within the supported bounds'''
+        if not np.all(np.isfinite([logZ, CO_ratio, T])):
+            return False
         if T <= self.min_temperature:
             return False
         if logZ <= self.logZs.min() or logZ >= self.logZs.max():

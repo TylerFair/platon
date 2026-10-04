@@ -24,13 +24,10 @@ class Visualizer:
         self.canvas[in_annulus] = np.array(color_intensities)
 
     def _draw_layer(self, r1, r2, color_intensities, min_radius, max_radius):
-        min_y = round((r1 - min_radius)/self.m_per_pix)
-        if min_y < 0: min_y = 0
-        min_y = int(min_y)
-
-        max_y = round((r2 - min_radius)/self.m_per_pix)
-        if max_y > self.size: max_y = self.size
-        max_y = int(max_y)
+        # The background layer extends to infinity. Clip before rounding so
+        # it fills the remaining canvas without converting infinity to int.
+        min_y = int(round(np.clip((r1 - min_radius)/self.m_per_pix, 0, self.size)))
+        max_y = int(round(np.clip((r2 - min_radius)/self.m_per_pix, 0, self.size)))
         
         self.canvas[min_y : max_y, :] = np.array(color_intensities)
 

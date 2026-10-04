@@ -11,6 +11,7 @@ To compute transit depths, look at transit_depth_example.py, then go to
 
   from platon.transit_depth_calculator import TransitDepthCalculator
   from platon.constants import M_jup, R_jup, R_sun
+  from platon.TP_profile import Profile
 
   # All inputs and outputs for PLATON are in SI
   
@@ -18,13 +19,15 @@ To compute transit depths, look at transit_depth_example.py, then go to
   Mp = 0.73 * M_jup
   Rp = 1.40 * R_jup
   T = 1200
+  profile = Profile()
+  profile.set_isothermal(T)
 
   # The initializer loads all data files.  Create a TransitDepthCalculator
   # object and hold on to it
   calculator = TransitDepthCalculator()
 
   # compute_depths is fast once data files are loaded
-  wavelengths, depths, info_dict = calculator.compute_depths(Rs, Mp, Rp, T, logZ=0, CO_ratio=0.53, full_output=True)
+  wavelengths, depths, info_dict = calculator.compute_depths(profile, Rs, Mp, Rp, logZ=0, CO_ratio=0.53, full_output=True)
 
 You can adjust a variety of parameters, including the metallicity (Z) and C/O
 ratio. By default, logZ = 0 and C/O = 0.53. Any other value for
@@ -45,7 +48,7 @@ You can also specify custom abundances, albeit in a somewhat hacky way::
   abundances["CO2"] *= 0
   abundances["CO2"] += 1e-5
   
-  calculator.compute_depths(Rs, Mp, Rp, T, logZ=None, CO_ratio=None,
+  calculator.compute_depths(profile, Rs, Mp, Rp, logZ=None, CO_ratio=None,
                             custom_abundances=abundances)
 			    
 To retrieve atmospheric parameters, look at retrieve_dynesty.py, retrieve_multinest.py, retrieve_emcee.py, or retrieve_eclipses.py, then go to
@@ -65,15 +68,15 @@ To retrieve atmospheric parameters, look at retrieve_dynesty.py, retrieve_multin
   fit_info.add_gaussian_fit_param('Mp', 0.04*M_jup)
 
   # Fit for other parameters using uniform priors
-  fit_info.add_uniform_fit_param('R', 0.9*R_guess, 1.1*R_guess)
-  fit_info.add_uniform_fit_param('T', 0.5*T_guess, 1.5*T_guess)
+  fit_info.add_uniform_fit_param('Rp', 0.9*Rp, 1.1*Rp)
+  fit_info.add_uniform_fit_param('T', 0.5*T, 1.5*T)
   fit_info.add_uniform_fit_param("log_scatt_factor", 0, 1)
   fit_info.add_uniform_fit_param("logZ", -1, 3)
   fit_info.add_uniform_fit_param("CO_ratio", 0.2, 2)
   fit_info.add_uniform_fit_param("log_cloudtop_P", -0.99, 5)
   fit_info.add_uniform_fit_param("error_multiple", 0.5, 5)
   
-  # Run nested sampling. You can replace run_dynesty with run_pymultinest,
+  # Run nested sampling. You can replace run_dynesty with run_multinest,
   # which is sometimes much faster and more robust
   result = retriever.run_dynesty(
 	 bins, depths, errors, #transit bins, depths, errors
@@ -124,7 +127,8 @@ use the run_emcee method instead of the run_dynesty method. Do note that
 Nested Sampling is recommended, as it is not trivial to deal with multi-modal
 posteriors or to check for convergence with emcee::
 
-  result = retriever.run_emcee(bins, depths, errors, fit_info)
+  result = retriever.run_emcee(
+      bins, depths, errors, None, None, None, fit_info)
 
 For MCMC, the number of walkers and iterations/steps can also be specified. The
 `result` object returned by run_emcee is different from that returned

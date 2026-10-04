@@ -34,6 +34,7 @@ smoothed importance sampling. https://arxiv.org/abs/arXiv:1507.02646v5
 
 from __future__ import division # For Python 2 compatibility
 import numpy as np
+from scipy.special import logsumexp
 
 # 3-Clause BSD License
 """
@@ -133,6 +134,11 @@ def psislw(lw, Reff=1.0, overwrite_lw=False):
         Pareto tail indices
 
     """
+    lw = np.asarray(lw)
+    if not np.issubdtype(lw.dtype, np.floating):
+        lw = lw.astype(float)
+    if not np.isfinite(Reff) or Reff <= 0:
+        raise ValueError('Reff must be finite and positive')
     if lw.ndim == 2:
         n, m = lw.shape
     elif lw.ndim == 1:
@@ -142,6 +148,9 @@ def psislw(lw, Reff=1.0, overwrite_lw=False):
         raise ValueError("Argument `lw` must be 1 or 2 dimensional.")
     if n <= 1:
         raise ValueError("More than one log-weight needed.")
+    if (np.any(np.isnan(lw)) or np.any(np.isposinf(lw)) or
+            np.any(np.all(np.isneginf(lw), axis=0))):
+        raise ValueError('Each log-weight column must contain finite weight and no NaN or positive infinity')
 
     if overwrite_lw and lw.flags.f_contiguous:
         # in-place operation
@@ -383,13 +392,8 @@ def sumlogs(x, axis=None, out=None):
     it works even when elements have large magnitude.
 
     """
-    maxx = x.max(axis=axis, keepdims=True)
-    xnorm = x - maxx
-    np.exp(xnorm, out=xnorm)
-    out = np.sum(xnorm, axis=axis, out=out)
-    if isinstance(out, np.ndarray):
-        np.log(out, out=out)
-    else:
-        out = np.log(out)
-    out += np.squeeze(maxx)
-    return out
+    result = logsumexp(x, axis=axis)
+    if out is not None:
+        out[...] = result
+        return out
+    return result

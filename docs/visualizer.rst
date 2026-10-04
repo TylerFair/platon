@@ -5,8 +5,17 @@ If you want to see what your exoplanet might look like in transit, the
 Visualizer module is for you!  Visualizer uses the absorption profile
 calculated by the transit depth calculator, which you can get using::
 
+  import numpy as np
+  import matplotlib.pyplot as plt
+  from platon.TP_profile import Profile
+  from platon.transit_depth_calculator import TransitDepthCalculator
+  from platon.visualizer import Visualizer
+
+  profile = Profile()
+  profile.set_isothermal(T)
   calculator = TransitDepthCalculator()
-  wavelengths, depths, info = calculator.compute_depths(Rs, Mp, Rp, T, full_output=True)
+  wavelengths, depths, info = calculator.compute_depths(
+      profile, Rs, Mp, Rp, full_output=True)
 
 Then, to draw an image::
 
@@ -18,7 +27,7 @@ Then, to draw an image::
   image, m_per_pix = visualizer.draw(info, color_bins, method='disk')
 
 This maps all wavelengths between 4--5 microns to red, while 3.2--4 microns
-maps to green and 4--5 microns maps to blue.  The draw function returns an
+maps to green and 1.1--1.7 microns maps to blue.  The draw function returns an
 image and an image scale, in meters per pixel.  The image can be displayed
 with pyplot::
 
@@ -40,4 +49,3 @@ star_color argument of draw.
    :align: right
 	   
    55 Cnc e as a disk transiting a yellow star
-

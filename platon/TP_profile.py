@@ -90,9 +90,10 @@ class Profile:
         d_lambda = np.diff(wavelengths)
         d_lambda = np.append(d_lambda[0], d_lambda)
 
-        # Convert stellar spectrum from photons/time to energy/time
+        # Calculator spectra are both energy flux densities (W m^-2 m^-1).
+        # Integrate each sampled wavelength interval for opacity weighting.
         stellar_spectrum = np.asarray(info_dict["stellar_spectrum"],
-                                      dtype=np.float64) * h * c / wavelengths
+                                      dtype=np.float64) * d_lambda
 
         # Convert planetary spectrum from energy/time/wavelength to energy/time
         planet_spectrum = np.asarray(info_dict["planet_spectrum"],
@@ -125,7 +126,9 @@ class Profile:
                                   (1 + (gamma * taus / 2 - 1) * np.exp(-gamma * taus)) +
                                   2.0 * gamma / 3 * (1 - taus**2 / 2) * e2)
         T = T4 ** 0.25
-        self.temperatures = np.append(T[0], T)
+        self.temperatures = np.interp(
+            np.log10(self.pressures), np.log10(info_dict['P_profile']),
+            np.append(T[0], T))
         self.profile_type = "opacity"
         self.profile_params = dict(T_irr=T_irr, T_int=T_int)
 

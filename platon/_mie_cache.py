@@ -9,25 +9,24 @@ class MieCache:
 
         
     def get_from_cache(self, m, xs, max_frac_error=0.05):
+        xs = np.asarray(xs, dtype=float)
         result = np.ones(len(xs)) * np.nan
-
-        if len(self.all_xs) == 0:
+        matches = self.all_ms == m
+        if not np.any(matches):
             return result
-        
-        in_cache = np.ones(len(xs), dtype=bool)
-        closest_matches = np.searchsorted(self.all_xs, xs)        
-        in_cache[np.logical_or(closest_matches == 0, closest_matches == len(self.all_xs))] = False
-        
-        closest_matches[closest_matches == len(self.all_xs)] -= 1
-        in_cache[self.all_ms[closest_matches] != m] = False
-        frac_errors = np.abs(self.all_xs[closest_matches] - xs)/xs
-        in_cache[frac_errors > max_frac_error] = False
-
-        if np.sum(self.all_ms == m) == 0: return result
-        
+        cached_xs = self.all_xs[matches]
+        upper = np.searchsorted(cached_xs, xs)
+        right = np.minimum(upper, len(cached_xs) - 1)
+        left = np.maximum(upper - 1, 0)
+        exact = cached_xs[right] == xs
+        # Both interpolation vertices must be nearby and belong to this
+        # refractive index; a nearby point of another material is irrelevant.
+        interior = (upper > 0) & (upper < len(cached_xs))
+        in_cache = exact | (interior &
+                            (xs - cached_xs[left] <= max_frac_error * xs) &
+                            (cached_xs[right] - xs <= max_frac_error * xs))
         result[in_cache] = np.interp(
-            xs[in_cache],
-            self.all_xs[self.all_ms == m],
+            xs[in_cache], cached_xs,
             self.all_Qexts[self.all_ms == m])
 
         return result
@@ -35,6 +34,7 @@ class MieCache:
     def get_and_update(self, m, xs):
         # Get from cache if available, from Mie calculations if not. 
         # Put results of Mie calculations into cache.
+        xs = np.asarray(xs, dtype=float)
         Qexts = self.get_from_cache(m, xs)
         cache_misses = np.isnan(Qexts)
         if np.sum(cache_misses) > 0:
@@ -52,7 +52,7 @@ class MieCache:
         self.all_ms = np.append(self.all_ms, np.array([m] * len(xs)))
         if len(self.all_xs) > size_limit:
             to_remove = np.random.choice(
-                range(len(self.all_xs)), len(self.all_xs) - size_limit + 1,
+                range(len(self.all_xs)), len(self.all_xs) - size_limit,
                 replace=False)
             
             self.all_xs = np.delete(self.all_xs, to_remove)

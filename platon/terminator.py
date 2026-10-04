@@ -17,10 +17,12 @@ class TerminatorSector:
     def __post_init__(self):
         if not isinstance(self.profile, Profile):
             raise TypeError("profile must be a platon.TP_profile.Profile")
-        if self.cloudtop_pressure <= 0:
+        if np.isnan(self.cloudtop_pressure) or self.cloudtop_pressure <= 0:
             raise ValueError("cloudtop_pressure must be positive")
-        if self.scattering_factor <= 0:
+        if not np.isfinite(self.scattering_factor) or self.scattering_factor <= 0:
             raise ValueError("scattering_factor must be positive")
+        if not np.isfinite(self.scattering_slope):
+            raise ValueError("scattering_slope must be finite")
 
 
 @dataclass(frozen=True)
@@ -95,6 +97,7 @@ class TwoSectorTerminator:
         sectors = []
         for label in ("cold", "hot"):
             profile = Profile()
+            profile.pressures = np.array(getattr(self, label).profile.pressures, copy=True)
             if self.profile_type == "isothermal":
                 profile.set_isothermal(params[f"{label}.T"])
             else:

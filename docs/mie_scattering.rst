@@ -9,7 +9,7 @@ To use Mie scattering, follow :doc:`quickstart` to see how to do forward models
 and retrievals using the default parametric model.  To use Mie scattering
 instead::
 
-  calculator.compute_depths(Rs, Mp, Rp, T,
+  calculator.compute_depths(profile, Rs, Mp, Rp,
       ri = 1.33-0.1j, frac_scale_height = 0.5, number_density = 1e9,
       part_size = 1e-6, cloudtop_pressure=1e5)
 
@@ -23,7 +23,7 @@ We also allow the computation of Mie scattering for three condensates using
 their actual, wavelength-dependent refractive indices, assuming a standard
 deviation in the lognormal size distribution of 0.5::
 
-  calculator.compute_depths(Rs, Mp, Rp, T,
+  calculator.compute_depths(profile, Rs, Mp, Rp,
       ri = "TiO2_anatase", frac_scale_height = 0.5, number_density = 1e9,
       part_size = 1e-6, cloudtop_pressure=1e5)
 

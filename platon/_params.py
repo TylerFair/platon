@@ -27,6 +27,8 @@ class _Param:
 
 class _UniformParam(_Param):
     def __init__(self, best_guess, low_lim, high_lim, low_guess, high_guess):
+        if np.isnan(low_lim) or np.isnan(high_lim) or low_lim >= high_lim:
+            raise ValueError("Uniform lower limit must be less than upper limit")
         _Param.__init__(self, best_guess, low_guess, high_guess)
         self.low_lim = low_lim
         self.high_lim = high_lim
@@ -51,18 +53,22 @@ class _UniformParam(_Param):
 
 class _GaussianParam(_Param):
     def __init__(self, best_guess, std, low_guess, high_guess):
+        if not np.isfinite(best_guess) or not np.isfinite(std) or std <= 0:
+            raise ValueError("Gaussian mean must be finite and std must be finite and positive")
         _Param.__init__(self, best_guess, low_guess, high_guess)
 
         self.std = std
 
     def ln_prior(self, value):
-        return np.log(scipy.stats.norm.pdf(value, self.best_guess, self.std))
+        if not self.within_limits(value):
+            return -np.inf
+        return scipy.stats.norm.logpdf(value, self.best_guess, self.std)
 
     def from_unit_interval(self, u):
         return scipy.stats.norm.ppf(u, self.best_guess, self.std)
 
     def within_limits(self, value):
-        return True
+        return bool(np.isfinite(value))
 
     def __repr__(self):
         return "Guess, STD: {}, {}".format(self.best_guess, self.std)

@@ -18,7 +18,8 @@ def read_species_data(absorption_dir, species_info_file, method,
 
     with open(species_info_file) as f:
         for line in f:
-            if line[0] == '#':
+            line = line.strip()
+            if not line or line.startswith('#'):
                 continue
             columns = line.split()
             name = columns[0]
