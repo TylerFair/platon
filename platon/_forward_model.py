@@ -45,11 +45,10 @@ K_B_OVER_AMU = k_B / AMU
 # Indices into the packed scalar-parameter vector
 (SC_RS, SC_MP, SC_RP, SC_LOGZ, SC_CO, SC_LOG_CH4, SC_SCAT_FACTOR,
  SC_SCAT_SLOPE, SC_SCAT_REF_UM, SC_CLOUDTOP, SC_P_QUENCH,
- SC_LOG10_P_QUENCH, SC_T_STAR, SC_T_SPOT, SC_SPOT_FRAC, SC_FSH, SC_NUM_DEN,
+ SC_LOG10_P_QUENCH, SC_T_STAR, SC_T_HET, SC_F_HET, SC_FSH, SC_NUM_DEN,
  SC_LN_MIN_XSEC, SC_LOG_MIN_ABUND, SC_REF_PRESSURE, SC_T_STAR_HYDRO,
  SC_MIE_REF_P, SC_SURFACE_P, SC_A_OVER_RS, SC_SURFACE_TEMP, SC_REDIST,
- SC_T_FAC, SC_FAC_FRAC, SC_LOGG_PHOT, SC_LOGG_SPOT, SC_LOGG_FAC,
- SC_FEH, SC_N_SCALARS) = range(33)
+ SC_T_HET2, SC_F_HET2, SC_N_SCALARS) = range(29)
 
 # Indices into the packed int vector
 IX_FLOOR, IX_N_INTS = range(2)
@@ -112,12 +111,14 @@ class ForwardConfig(NamedTuple):
     use_mie: bool
     has_t_star: bool
     stellar_in_grid: bool    # stellar grid vs blackbody (host-known)
-    has_spots: bool
+    has_het: bool            # first heterogeneity has a nonzero fraction
     has_surface: bool = False
     surface_temp_given: bool = False
-    has_faculae: bool = False
-    spot_in_grid: bool = False
-    fac_in_grid: bool = False
+    has_het2: bool = False
+    # Per visit: whether each heterogeneity uses the stellar grid
+    het_in_grid: tuple = (False,)
+    het2_in_grid: tuple = (False,)
+    n_visits: int = 1        # distinct heterogeneity settings across bins
 
 
 class ForwardInputs(NamedTuple):
@@ -136,7 +137,10 @@ class ForwardInputs(NamedTuple):
     rh_orig: Any = None     # (L0,)
     crust_flux: Any = None  # (NC2,)
     crust_T: Any = None     # (NC2,)
-    stellar_fluxes: Any = None  # (3, stellar wavelengths): host-interpolated vertices
+    stellar_fluxes: Any = None  # (V, 3, stellar wavelengths): host-interpolated
+                                # photosphere, het, het2 spectra per visit
+    visit_het: Any = None   # (V, 4) [T_het, f_het, T_het2, f_het2], V > 1 only
+    bin_visit: Any = None   # (B,) int32 visit of each bin, V > 1 only
 
 
 class UnpackedInputs(NamedTuple):
@@ -154,6 +158,8 @@ class UnpackedInputs(NamedTuple):
     crust_flux: Any = None
     crust_T: Any = None
     stellar_fluxes: Any = None
+    visit_het: Any = None
+    bin_visit: Any = None
 
 
 def pack_inputs(scalars, floor_idx, T_profile, P_profile, shell_mask,
@@ -507,26 +513,51 @@ def _stellar_grid_spectrum(data, temperature, flux, orig=False):
     return jnp.where(lam < waves[0], blue, jnp.where(lam > waves[-1], red, spectrum))
 
 
-def _stellar_spectrum(cfg, data, sc, orig=False, stellar_fluxes=None):
-    """Photosphere, spots, faculae, and their common-metallicity TLS factor."""
+def _stellar_spectrum(cfg, data, sc, inp, visit=0, orig=False):
+    """Disk-integrated stellar spectrum during one visit and its TLS
+    correction factor: a photosphere plus up to two heterogeneities of
+    either sign, all at the stellar metallicity."""
     lam = data.orig_lambda_grid if orig else data.lambda_grid
     if not cfg.has_t_star:
         ones = jnp.ones(lam.shape[0], dtype=jnp.float32)
         return ones, ones
 
+    if cfg.n_visits == 1:
+        T_het, f_het = sc[SC_T_HET], sc[SC_F_HET]
+        T_het2, f_het2 = sc[SC_T_HET2], sc[SC_F_HET2]
+    else:
+        T_het, f_het, T_het2, f_het2 = inp.visit_het[visit]
+
     def component(temperature, in_grid, index):
         if in_grid:
-            return _stellar_grid_spectrum(data, temperature, stellar_fluxes[index], orig)
+            return _stellar_grid_spectrum(
+                data, temperature, inp.stellar_fluxes[visit, index], orig)
         return math.pi * _planck(lam, temperature)
 
     phot = component(sc[SC_T_STAR], cfg.stellar_in_grid, 0)
-    f_spot, f_fac = sc[SC_SPOT_FRAC], sc[SC_FAC_FRAC]
-    spectrum = (1 - f_spot - f_fac) * phot
-    if cfg.has_spots:
-        spectrum += f_spot * component(sc[SC_T_SPOT], cfg.spot_in_grid, 1)
-    if cfg.has_faculae:
-        spectrum += f_fac * component(sc[SC_T_FAC], cfg.fac_in_grid, 2)
+    spectrum = (1 - f_het - f_het2) * phot
+    if cfg.has_het:
+        spectrum += f_het * component(T_het, cfg.het_in_grid[visit], 1)
+    if cfg.has_het2:
+        spectrum += f_het2 * component(T_het2, cfg.het2_in_grid[visit], 2)
     return spectrum, phot / spectrum
+
+
+def _contaminated_depths(cfg, data, sc, inp, depths):
+    """TLS-corrected transit depths, binned when bins are set.  With several
+    visits, each bin takes the correction for the visit it was observed in;
+    the atmosphere itself is computed only once.  Also returns the first
+    visit's stellar spectrum and correction factor."""
+    stellar, corr = _stellar_spectrum(cfg, data, sc, inp)
+    if data.bin_idx is None:
+        return depths * corr, stellar, corr
+    binned = _bin_average(depths * corr, stellar, data)
+    for visit in range(1, cfg.n_visits):
+        stellar_v, corr_v = _stellar_spectrum(cfg, data, sc, inp, visit)
+        binned = jnp.where(inp.bin_visit == visit,
+                           _bin_average(depths * corr_v, stellar_v, data),
+                           binned)
+    return binned, stellar, corr
 
 
 def _bin_average(values, weights, data):
@@ -573,11 +604,7 @@ def _transit_core(cfg, data, pin):
     depths = (r_floor / Rs) ** 2 + \
         2.0 / Rs ** 2 * (absorption_fraction @ shell_w)
 
-    stellar, corr = _stellar_spectrum(cfg, data, sc, stellar_fluxes=inp.stellar_fluxes)
-    if data.bin_idx is not None:
-        binned = _bin_average(depths * corr, stellar, data)
-    else:
-        binned = depths * corr
+    binned, stellar, corr = _contaminated_depths(cfg, data, sc, inp, depths)
 
     return TransitOutputs(binned, depths, stellar, corr, tau_los,
                           absorption_fraction, atm)
@@ -632,7 +659,7 @@ def _eclipse_core(cfg, data, pin):
     fluxes = fluxes + jnp.where(w_cloud, 1.0, 0.0) * \
         math.pi * planck_bot * bottom_term
 
-    stellar, _ = _stellar_spectrum(cfg, data, sc, stellar_fluxes=inp.stellar_fluxes)
+    stellar, _ = _stellar_spectrum(cfg, data, sc, inp)
 
     surface_temp = jnp.float32(0.0)
     irrad = jnp.float32(0.0)
@@ -640,7 +667,7 @@ def _eclipse_core(cfg, data, pin):
         if cfg.surface_temp_given:
             surface_temp = sc[SC_SURFACE_TEMP]
         else:
-            stellar_orig, _ = _stellar_spectrum(cfg, data, sc, orig=True, stellar_fluxes=inp.stellar_fluxes)
+            stellar_orig, _ = _stellar_spectrum(cfg, data, sc, inp, orig=True)
             irrad = sc[SC_REDIST] * jnp.trapezoid(
                 (1 - inp.rh_orig) * stellar_orig / sc[SC_A_OVER_RS] ** 2,
                 data.orig_lambda_grid)
@@ -740,17 +767,13 @@ def _transit_depths_dual(cfg, data, pin):
             tau_cloudy = tau_cloudy + \
                 (factor * pow_cloudy - pow_clear)[:, None] * v_ray[None, :]
 
-    stellar, corr = _stellar_spectrum(cfg, data, sc, stellar_fluxes=inp.stellar_fluxes)
-
     def side_depths(tau_los, shell_mask, floor_idx):
         absorption_fraction = -jnp.expm1(-tau_los)
         shell_w = shell_mask * radii[1:] * dr
         r_floor = radii[floor_idx]
         depths = (r_floor / Rs) ** 2 + \
             2.0 / Rs ** 2 * (absorption_fraction @ shell_w)
-        if data.bin_idx is not None:
-            return _bin_average(depths * corr, stellar, data)
-        return depths * corr
+        return _contaminated_depths(cfg, data, sc, inp, depths)[0]
 
     binned_cloudy = side_depths(tau_cloudy, inp.shell_mask,
                                 inp.ints[IX_FLOOR])

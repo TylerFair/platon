@@ -219,7 +219,7 @@ def grid_from_dict(data, legacy_wavelengths=None):
 
 def resolve_stellar_grid(stellar_grid='newera'):
     if stellar_grid is None or str(stellar_grid).lower() == 'newera':
-        return Path(__file__).resolve().parent / 'stellar_data/newera_jwst.npz'
+        return Path(__file__).resolve().parent / 'data/stellar_data/newera_jwst.npz'
     if str(stellar_grid).lower() == 'phoenix':
         return Path(__file__).resolve().parent / 'data/stellar_spectra.pkl'
     path = Path(stellar_grid).expanduser().resolve()
@@ -263,26 +263,42 @@ def _load_grid_cached(path, mtime_ns, size):
     return grid_from_dict(data, waves)
 
 
-def stellar_components(grid, T_star, T_spot, spot_cov_frac, T_fac=None,
-                       fac_cov_frac=None, logg_phot=4.5, logg_spot=None,
-                       logg_fac=None, feh=0., blackbody=False, grid_only=False):
-    """Validate stellar inputs on the host and select static JIT branches."""
+def resolve_legacy_het(T_het, f_het, T_spot, spot_cov_frac):
+    """T_spot and spot_cov_frac are the older names of T_het and f_het."""
+    for new_name, new, old_name, old in (('T_het', T_het, 'T_spot', T_spot),
+                                         ('f_het', f_het, 'spot_cov_frac', spot_cov_frac)):
+        if old is not None and new is not None:
+            raise ValueError(f'Pass {new_name} or its old name {old_name}, not both')
+    return (T_spot if T_het is None else T_het,
+            spot_cov_frac if f_het is None else f_het)
+
+
+def stellar_components(grid, T_star, T_het, f_het, T_het2=None, f_het2=None,
+                       logg_star=4.5, logg_het=None, logg_het2=None,
+                       feh_star=0., blackbody=False, grid_only=False):
+    """Validate one photosphere plus up to two heterogeneities on the host.
+
+    Each heterogeneity may be cooler (spots) or hotter (faculae) than the
+    photosphere.  Returns (temperatures, gravities, fractions, in_grid) for
+    (photosphere, het, het2); in_grid selects static JIT branches.
+    """
     if blackbody and grid_only:
         raise ValueError('stellar_blackbody and stellar_grid_only cannot both be True')
-    fractions = (0. if spot_cov_frac is None else spot_cov_frac,
-                 0. if fac_cov_frac is None else fac_cov_frac)
+    fractions = (0. if f_het is None else f_het,
+                 0. if f_het2 is None else f_het2)
     if (not np.all(np.isfinite(fractions)) or min(fractions) < 0 or sum(fractions) > 1):
-        raise AtmosphereError('Stellar covering fractions must be finite, nonnegative, and sum to at most one')
-    temps = (T_star, T_star if T_spot is None else T_spot,
-             T_star if T_fac is None else T_fac)
-    gravities = (logg_phot, logg_phot if logg_spot is None else logg_spot,
-                 logg_phot if logg_fac is None else logg_fac)
+        raise AtmosphereError('Heterogeneity fractions f_het and f_het2 must be finite, '
+                              'nonnegative, and sum to at most one')
+    temps = (T_star, T_star if T_het is None else T_het,
+             T_star if T_het2 is None else T_het2)
+    gravities = (logg_star, logg_star if logg_het is None else logg_het,
+                 logg_star if logg_het2 is None else logg_het2)
     active = (T_star is not None, fractions[0] > 0, fractions[1] > 0)
     if T_star is None and any(active):
         raise AtmosphereError('T_star is required for stellar contamination')
     in_grid = []
     for component, temp, gravity, enabled in zip(
-            ('T_star', 'T_spot', 'T_fac'),
+            ('T_star', 'T_het', 'T_het2'),
             temps, gravities, active):
         if not enabled:
             in_grid.append(False)
@@ -305,7 +321,7 @@ def stellar_components(grid, T_star, T_spot, spot_cov_frac, T_fac=None,
                               UserWarning, stacklevel=2)
                 _blackbody_warnings.add(key)
         if use_grid:
-            grid.validate(temp, gravity, feh)
+            grid.validate(temp, gravity, feh_star)
         in_grid.append(bool(use_grid))
     return temps, gravities, fractions, tuple(in_grid)
 

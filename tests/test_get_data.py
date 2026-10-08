@@ -200,6 +200,7 @@ def test_successful_update_replaces_old_data_and_marker(tmp_path, monkeypatch):
 @pytest.mark.parametrize("marker", [None, "outdated"])
 def test_missing_or_stale_marker_warns_without_redownload(tmp_path, monkeypatch, capsys, marker):
     (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "pressures.npy").write_bytes(b"installed")
     if marker is not None:
         (tmp_path / "md5sum").write_text(marker)
     monkeypatch.setattr(downloader, "__file__", str(tmp_path / "_get_data.py"))
@@ -210,6 +211,7 @@ def test_missing_or_stale_marker_warns_without_redownload(tmp_path, monkeypatch,
 
 def test_installed_current_data_needs_no_download(tmp_path, monkeypatch, capsys):
     (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "pressures.npy").write_bytes(b"installed")
     (tmp_path / "md5sum").write_text(downloader.__md5sum__ + "\n")
     monkeypatch.setattr(downloader, "__file__", str(tmp_path / "_get_data.py"))
     monkeypatch.setattr(downloader, "get_data", lambda *args: pytest.fail("Unexpected redownload"))
@@ -226,3 +228,28 @@ def test_absent_data_is_installed_once(tmp_path, monkeypatch, capsys):
     assert len(calls) == 1
     assert (tmp_path / "data" / "pressures.npy").read_bytes() == b"test"
     assert "out of date" not in capsys.readouterr().out
+
+
+def test_stellar_grid_alone_does_not_count_as_opacity_data(tmp_path, monkeypatch):
+    # NewEra may be downloaded into data/ before the opacity archive
+    (tmp_path / "data" / "stellar_data").mkdir(parents=True)
+    (tmp_path / "data" / "stellar_data" / "newera_jwst.npz").write_bytes(b"grid")
+    payload = archive_bytes({"data/pressures.npy": b"test"})
+    _, calls = mock_download(monkeypatch, payload)
+    monkeypatch.setattr(downloader, "__file__", str(tmp_path / "_get_data.py"))
+    downloader.get_data_if_needed()
+    assert len(calls) == 1
+    assert (tmp_path / "data" / "pressures.npy").read_bytes() == b"test"
+
+
+def test_opacity_reinstall_keeps_downloaded_stellar_grid(tmp_path, monkeypatch):
+    previous_install(tmp_path)
+    (tmp_path / "data" / "stellar_data").mkdir()
+    (tmp_path / "data" / "stellar_data" / "newera_jwst.npz").write_bytes(b"grid")
+    payload = archive_bytes({"data/new.npy": b"new data"})
+    mock_download(monkeypatch, payload)
+    downloader.get_data(tmp_path)
+    assert (tmp_path / "data" / "new.npy").read_bytes() == b"new data"
+    assert not (tmp_path / "data" / "old.npy").exists()
+    assert (tmp_path / "data" / "stellar_data" / "newera_jwst.npz").read_bytes() == b"grid"
+    assert_no_partial_downloads(tmp_path)

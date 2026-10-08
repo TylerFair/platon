@@ -24,6 +24,7 @@ in our second PLATON paper.**
    install
    quickstart
    stellar_contamination
+   instrument_offsets
    patchy_clouds
    two_sector_terminators
    samplers

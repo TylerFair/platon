@@ -1,13 +1,18 @@
-Stellar contamination (spots and faculae)
-*****************************************
+Stellar contamination (unocculted heterogeneities)
+**************************************************
 
 Starspots and faculae that the planet does not cross make the disk-averaged
 stellar spectrum differ from the spectrum of the chord the planet actually
-transits.  This *transit light source effect* imprints stellar features on the
-transmission spectrum, and it is often the largest systematic for planets
-around M and K dwarfs.  PLATON models it with the PHOENIX NewEra stellar
-spectra (Hauschildt et al. 2025), interpolated in effective temperature, surface
-gravity, and metallicity.
+transits.  This *transit light source effect* (Rackham, Apai & Giampapa 2018)
+imprints stellar features on the transmission spectrum, and it is often the
+largest systematic for planets around M and K dwarfs.  PLATON models it with
+the PHOENIX NewEra stellar spectra (Hauschildt et al. 2025), interpolated in
+effective temperature, surface gravity, and metallicity.
+
+PLATON describes the star as a photosphere plus one or two *heterogeneities*.
+A heterogeneity is any region of the unocculted disk with its own temperature:
+it may be cooler than the photosphere (spots) or hotter (faculae), and PLATON
+does not assume which.
 
 Computing a contaminated spectrum
 =================================
@@ -19,26 +24,27 @@ Pass the stellar parameters to ``compute_depths``::
   calculator = TransitDepthCalculator()
   wavelengths, depths, info = calculator.compute_depths(
       p, Rs, Mp, Rp,
-      T_star=3400, logg_phot=4.9, feh=0.0,  # photosphere
-      T_spot=3000, spot_cov_frac=0.05,      # unocculted spots
-      T_fac=3600, fac_cov_frac=0.02)        # unocculted faculae (optional)
+      T_star=3400, logg_star=4.9, feh_star=0.0,  # photosphere
+      T_het=3000, f_het=0.05,                    # a heterogeneity
+      T_het2=3600, f_het2=0.02)                  # a second one (optional)
 
 The first time stellar parameters are used, PLATON downloads the NewEra spectra
-(about 300 MB) into its installation directory, next to the opacity data.  This
-happens only once.  ``examples/stellar_contamination_example.py`` plots a clean
-and a contaminated spectrum side by side.
+(about 300 MB) into its data directory (``platon/data/stellar_data``), next to
+the opacity data.  This happens only once.
+``examples/stellar_contamination_example.py`` plots a clean and a contaminated
+spectrum side by side.
 
-PLATON assumes the planet transits the unspotted photosphere, so each transit
-depth is multiplied by
+PLATON assumes the planet transits the photosphere, so each transit depth is
+multiplied by
 
 .. math::
 
-   \frac{F_{\rm phot}}{(1 - f_{\rm spot} - f_{\rm fac})\,F_{\rm phot}
-   + f_{\rm spot}\,F_{\rm spot} + f_{\rm fac}\,F_{\rm fac}}
+   \frac{F_{\rm phot}}{(1 - f_{\rm het} - f_{\rm het2})\,F_{\rm phot}
+   + f_{\rm het}\,F_{\rm het} + f_{\rm het2}\,F_{\rm het2}}
 
 where *f* are the covering fractions and *F* the component spectra.  Cool
-unocculted spots therefore make the planet look larger in the blue, and
-faculae have the opposite effect.
+unocculted heterogeneities therefore make the planet look larger in the blue,
+and hot ones have the opposite effect.
 
 The stellar parameters are:
 
@@ -46,23 +52,27 @@ The stellar parameters are:
 Parameter            Meaning
 ===================  ===========================================================
 ``T_star``           Photosphere effective temperature (K)
-``T_spot``           Spot temperature (K)
-``spot_cov_frac``    Fraction of the stellar disk covered by unocculted spots
-``T_fac``            Facula temperature (K)
-``fac_cov_frac``     Fraction of the stellar disk covered by unocculted faculae
-``logg_phot``        Photosphere surface gravity, log10(g / cm s\ :sup:`-2`).
+``T_het``            Temperature of the first heterogeneity (K)
+``f_het``            Fraction of the stellar disk it covers (unocculted)
+``T_het2``           Temperature of the second heterogeneity (K)
+``f_het2``           Fraction of the stellar disk it covers (unocculted)
+``logg_star``        Photosphere surface gravity, log10(g / cm s\ :sup:`-2`).
                      Default 4.5
-``logg_spot``        Spot surface gravity.  Defaults to ``logg_phot``
-``logg_fac``         Facula surface gravity.  Defaults to ``logg_phot``
-``feh``              Stellar metallicity [Fe/H] in dex, shared by all
+``logg_het``         Gravity of the first heterogeneity.  Defaults to
+                     ``logg_star``
+``logg_het2``        Gravity of the second heterogeneity.  Defaults to
+                     ``logg_star``
+``feh_star``         Stellar metallicity [Fe/H] in dex, shared by all
                      components.  Default 0.  This is independent of the
                      planet's ``logZ``
 ===================  ===========================================================
 
-Spot and facula temperatures may be hotter or cooler than the photosphere, and
-the two covering fractions must sum to at most 1.  Without ``T_star``, no
-stellar spectrum is used.  The same parameters work in
+The two covering fractions must sum to at most 1.  An unset heterogeneity
+temperature equals the photosphere's, and an unset fraction is zero.  Without
+``T_star``, no stellar spectrum is used.  The same parameters work in
 :class:`.EclipseDepthCalculator`, where they set the stellar spectrum.
+``T_spot`` and ``spot_cov_frac``, the names used by earlier versions of
+PLATON, are still accepted for ``T_het`` and ``f_het``.
 
 Retrieving stellar contamination
 ================================
@@ -72,18 +82,22 @@ All of the parameters above can be fit.  Give them initial values in
 
   fit_info = retriever.get_default_fit_info(
       Rs, Mp, Rp, T, logZ=0, CO_ratio=0.53,
-      T_star=3400, logg_phot=4.9, feh=0.0,
-      T_spot=3000, spot_cov_frac=0.05,
+      T_star=3400, logg_star=4.9, feh_star=0.0,
+      T_het=3000, f_het=0.05,
       stellar_grid_only=True)
 
   fit_info.add_gaussian_fit_param("T_star", 100)
-  fit_info.add_uniform_fit_param("T_spot", 2300, 3400)
-  fit_info.add_uniform_fit_param("spot_cov_frac", 0, 0.3)
+  fit_info.add_uniform_fit_param("T_het", 2300, 4400)
+  fit_info.add_uniform_fit_param("f_het", 0, 0.3)
 
-If you fit both spots and faculae, choose priors for which the two covering
-fractions cannot sum to more than 1.  Stellar surface gravity and metallicity
-can be fit as well, but are usually better constrained by a Gaussian prior from
-the literature than by the transmission spectrum.
+With one heterogeneity, a temperature prior on both sides of ``T_star`` lets
+the data decide between spots and faculae.  With two, the labels are
+interchangeable: if both have the same priors, the posterior has two
+mirror-image modes.  Give them priors that do not overlap (e.g. ``T_het``
+below ``T_star`` and ``T_het2`` above it), and choose fraction priors that
+cannot sum to more than 1.  Stellar surface gravity and metallicity can be fit
+as well, but are usually better constrained by a Gaussian prior from the
+literature than by the transmission spectrum.
 
 ``stellar_grid_only=True`` makes temperatures outside the grid raise an error,
 which the retriever treats as zero likelihood.  Without it, temperatures outside
@@ -91,8 +105,52 @@ which the retriever treats as zero likelihood.  Without it, temperatures outside
 happens), so a wide prior could switch between stellar models partway through
 a retrieval.  We recommend ``stellar_grid_only=True`` for retrievals.
 
-``examples/retrieve_multi_instrument.py`` retrieves spot parameters together
-with an instrument offset (see :doc:`instrument_offsets`).
+Different heterogeneities in different visits
+=============================================
+
+Spots and faculae evolve, and the star rotates, so transits observed on
+different dates generally see different unocculted heterogeneities.  The
+photosphere does not change.  PLATON lets ``T_het``, ``f_het``, ``T_het2``,
+and ``f_het2`` differ between visits, while ``T_star``, ``logg_star``, and
+``feh_star`` are always shared.
+
+Give each dataset a visit when loading the data (see :doc:`instrument_offsets`),
+and pass the visits to ``get_default_fit_info``::
+
+  from platon.observations import load_spectra
+
+  data = load_spectra({"NIRISS": "soss.csv", "NRS1": "nrs1.csv",
+                       "NRS2": "nrs2.csv"},
+                      visits={"soss": "NIRISS", "g395h": ["NRS1", "NRS2"]})
+  fit_info = retriever.get_default_fit_info(
+      Rs, Mp, Rp, T, T_star=3400, T_het=3000, f_het=0.05,
+      transit_offsets=data.offsets, transit_visits=data.visits,
+      stellar_grid_only=True)
+
+This creates the parameters ``soss.T_het``, ``soss.f_het``, ``g395h.T_het``,
+``g395h.f_het`` (and the same for ``T_het2`` and ``f_het2``).  They default
+to None, which means "use the shared value", so you choose what varies by
+choosing what to fit.  For example, a spot temperature shared by both visits
+with a separate covering fraction for each::
+
+  fit_info.add_uniform_fit_param("T_het", 2300, 3300)
+  fit_info.add_uniform_fit_param("soss.f_het", 0, 0.3)
+  fit_info.add_uniform_fit_param("g395h.f_het", 0, 0.3)
+
+To let the temperature differ too, fit ``soss.T_het`` and ``g395h.T_het``
+instead of ``T_het``.  PLATON raises an error before sampling if a fitted
+parameter cannot affect the spectrum, for example a fitted ``f_het`` when
+every visit fits its own ``<visit>.f_het``.  Eclipse depths always use the
+shared values.
+
+The atmosphere is computed once per likelihood evaluation; only the stellar
+correction and the binning are repeated for each visit, so extra visits cost
+little.  For forward models, ``compute_depths`` accepts the same flexibility
+directly: once wavelength bins are set, ``T_het``, ``f_het``, ``T_het2``, and
+``f_het2`` may be arrays with one value per bin.
+
+``examples/retrieve_multi_instrument.py`` retrieves a heterogeneity together
+with an instrument offset.
 
 The NewEra grid
 ===============
@@ -147,7 +205,7 @@ single-star grid alongside your results::
   calculator = TransitDepthCalculator(stellar_grid=path)
 
 A grid made with fixed ``logg`` and ``feh`` only supports those values, so pass
-the same ``logg_phot`` and ``feh`` to the calculator.  To keep gravity and
+the same ``logg_star`` and ``feh_star`` to the calculator.  To keep gravity and
 metallicity free, give arrays instead: ``loggs=[4.5, 5.0]`` and
 ``fehs=[-0.5, 0.0, 0.5]``.
 
@@ -159,8 +217,12 @@ source::
   path = generate_stellar_grid("my_star_native.npz", source="sg-NewEra-JWST.h5",
                                logg=4.9, feh=0.0)
 
-Citing NewEra
-=============
+Citing
+======
+
+For the transit light source effect, please cite Rackham, Apai & Giampapa
+2018, ApJ 853, 122
+(`doi:10.3847/1538-4357/aaa08c <https://doi.org/10.3847/1538-4357/aaa08c>`_).
 
 If you use the NewEra spectra, please cite Hauschildt et al. 2025, A&A 698, A47
 (`doi:10.1051/0004-6361/202554171 <https://doi.org/10.1051/0004-6361/202554171>`_).
@@ -168,4 +230,4 @@ The spectra are distributed under the
 `CC BY 4.0 <https://creativecommons.org/licenses/by/4.0/>`_ license
 (`doi:10.25592/uhhfdm.17935 <https://doi.org/10.25592/uhhfdm.17935>`_); the
 version downloaded by PLATON has been binned to R=5000 and re-encoded, as
-described in ``platon/stellar_data/README.md``.
+described in ``platon/data/stellar_data/README.md``.

@@ -86,13 +86,13 @@ def test_sampler_drivers_preserve_tls_offsets_and_opacity_settings(backend, spec
     eclipse_depths = np.array([0.001, 0.0008])
     fit_transit = spectra in {"transit", "joint"}
     fit_eclipse = spectra in {"eclipse", "joint"}
-    tls_options = dict(T_fac=6500, fac_cov_frac=0.05, logg_phot=4.2,
-                       logg_spot=4.0, logg_fac=4.6, feh=-0.3,
+    tls_options = dict(T_het2=6500, f_het2=0.05, logg_star=4.2,
+                       logg_het=4.0, logg_het2=4.6, feh_star=-0.3,
                        stellar_grid_only=True, stellar_blackbody=False,
                        validate_T_grid=False)
     fit_info = CombinedRetriever.get_default_fit_info(
-        7e8, 1.9e27, 7e7, T=1000, T_star=5500, T_spot=4500,
-        spot_cov_frac=0.02, stellar_grid="legacy",
+        7e8, 1.9e27, 7e7, T=1000, T_star=5500, T_het=4500,
+        f_het=0.02, stellar_grid="legacy",
         transit_offsets={"offset_nirspec": (1, 3)} if fit_transit else None,
         eclipse_offsets={"offset_miri": (1, 2)} if fit_eclipse else None,
         **tls_options)
@@ -216,8 +216,8 @@ def test_posterior_reconstruction_recovers_pointwise_cache_misses():
 def test_old_fit_info_uses_stellar_and_temperature_validation_defaults():
     fit_info = CombinedRetriever.get_default_fit_info(7e8, 1.9e27, 7e7, T=1000)
     fit_info.add_uniform_fit_param("T", 800, 1200)
-    new_options = {"T_fac": None, "fac_cov_frac": None, "logg_phot": 4.5,
-                   "logg_spot": None, "logg_fac": None, "feh": 0.0,
+    new_options = {"T_het2": None, "f_het2": None, "logg_star": 4.5,
+                   "logg_het": None, "logg_het2": None, "feh_star": 0.0,
                    "stellar_grid_only": False, "stellar_blackbody": False,
                    "validate_T_grid": True}
     for name in ["stellar_grid", *new_options]:

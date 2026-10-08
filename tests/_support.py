@@ -12,8 +12,12 @@ from platon.constants import M_jup, R_jup, R_sun
 _FIXTURES = Path(__file__).parent / 'fixtures'
 _TLS_REFERENCE = json.loads((_FIXTURES / 'cool_star_tls_native.json').read_text())
 _OPACITY_REFERENCE = json.loads((_FIXTURES / 'eight_gas_guillot_opacity.json').read_text())
-STELLAR_PARAMS = _OPACITY_REFERENCE['stellar_parameters']
-assert STELLAR_PARAMS == _TLS_REFERENCE['parameters']
+assert _OPACITY_REFERENCE['stellar_parameters'] == _TLS_REFERENCE['parameters']
+# The fixtures were written with the earlier spot/photosphere names
+_FIXTURE_NAMES = {'T_spot': 'T_het', 'spot_cov_frac': 'f_het',
+                  'logg_phot': 'logg_star', 'feh': 'feh_star'}
+STELLAR_PARAMS = {_FIXTURE_NAMES.get(name, name): value for name, value
+                  in _OPACITY_REFERENCE['stellar_parameters'].items()}
 RS = _OPACITY_REFERENCE['geometry']['Rs_Rsun'] * R_sun
 MP = _OPACITY_REFERENCE['geometry']['Mp_Mjup'] * M_jup
 RP = _OPACITY_REFERENCE['geometry']['Rp_Rjup'] * R_jup

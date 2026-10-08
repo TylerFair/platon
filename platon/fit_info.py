@@ -1,5 +1,11 @@
+import difflib
+import warnings
+
 import numpy as np
 from ._params import _UniformParam, _GaussianParam, _Param
+
+# Older parameter names, still accepted when choosing what to fit
+_RENAMED = {"T_spot": "T_het", "spot_cov_frac": "f_het"}
 
 
 class FitInfo:
@@ -11,6 +17,21 @@ class FitInfo:
         for key in guesses_dict:
             self.all_params[key] = _Param(guesses_dict[key])
 
+    def _known_name(self, name):
+        """Returns the name under which `name` is stored, translating older
+        names; raises a KeyError suggesting close matches if it is unknown."""
+        new_name = _RENAMED.get(name)
+        if name not in self.all_params and new_name in self.all_params:
+            warnings.warn("{} has been renamed {}".format(name, new_name),
+                          DeprecationWarning, stacklevel=3)
+            return new_name
+        if name not in self.all_params:
+            close = difflib.get_close_matches(name, list(self.all_params), 3)
+            raise KeyError("Unknown parameter {}{}".format(
+                name, "; did you mean {}?".format(" or ".join(close))
+                if close else ""))
+        return name
+
     def add_uniform_fit_param(self, name, low_lim, high_lim,
                               low_guess=None, high_guess=None):
         '''Fit for the parameter `name` using a uniform prior between `low_lim`
@@ -19,6 +40,7 @@ class FitInfo:
         `high_guess`.  If not specified, `low_guess` is set to `low_lim`, and
         similarly with `high_guess`.'''
 
+        name = self._known_name(name)
         if name in self.fit_param_names:
             raise ValueError("Already fitting for {0}".format(name))
 
@@ -40,6 +62,8 @@ class FitInfo:
         Both values have the same uniform prior. Nested samplers draw both
         values and sort them, so no prior volume is discarded.
         """
+        cold_name = self._known_name(cold_name)
+        hot_name = self._known_name(hot_name)
         if cold_name == hot_name:
             raise ValueError("Ordered parameters must have different names")
         if cold_name in self.fit_param_names or hot_name in self.fit_param_names:
@@ -62,10 +86,15 @@ class FitInfo:
         `high_guess`.  If `low_guess` is None, it is set to mean-2*std; if
         `high_guess` is None, it is set to mean+2*std.'''
 
+        name = self._known_name(name)
         if name in self.fit_param_names:
             raise ValueError("Already fitting for {0}".format(name))
 
         mean = self.all_params[name].best_guess
+        if mean is None:
+            raise ValueError(
+                "{0} has no value to center its Gaussian prior on; set "
+                "fit_info.all_params['{0}'].best_guess first".format(name))
         if low_guess is None:
             low_guess = mean - 2 * std
         if high_guess is None:

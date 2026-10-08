@@ -139,7 +139,8 @@ def download_stellar_grid(force=False):
     Returns
     -------
     pathlib.Path
-        Installed manifest in the package's download-managed stellar_data folder.
+        Installed manifest, in the stellar_data folder of PLATON's data
+        directory (next to the opacity data).
     """
     from ._get_data import _download_and_install
     from . import __stellar_grid_url__, __stellar_grid_sha256__

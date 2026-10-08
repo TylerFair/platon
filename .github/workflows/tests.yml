@@ -33,7 +33,7 @@ jobs:
         run: echo "sha256=$(python -c 'from platon import __stellar_grid_sha256__; print(__stellar_grid_sha256__)')" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@v4
         with:
-          path: platon/stellar_data/*.npz
+          path: platon/data/stellar_data/*.npz
           key: newera-jwst-${{ steps.stellar.outputs.sha256 }}
       - name: Download stellar spectra once
         run: python -c 'from platon.stellar_grid import download_stellar_grid; download_stellar_grid()'
@@ -43,7 +43,7 @@ jobs:
             tests/test_stellar_grid.py tests/test_forward_validation.py \
             tests/test_tls_workflows.py tests/test_sampler_integration.py \
             tests/test_support_regressions.py \
-            tests/test_params.py \
+            tests/test_observations.py tests/test_heterogeneity_visits.py tests/test_params.py \
             tests/test_TP_profiles.py tests/test_nautilus.py tests/test_get_data.py \
             tests/test_two_sector.py tests/test_stellar_download.py \
             -k 'not set_opacity and not TestTwoSectorForwardModel'
@@ -65,7 +65,7 @@ jobs:
           import sysconfig
           package = Path(platon.__file__).resolve().parent
           assert package.parent == Path(sysconfig.get_path('purelib')).resolve()
-          assert not (package / 'stellar_data/newera_jwst.npz').exists()
+          assert not (package / 'data/stellar_data/newera_jwst.npz').exists()
           from platon.stellar_grid import generate_stellar_grid
           from platon._stellar_grid import load_stellar_grid
           grid = load_stellar_grid()

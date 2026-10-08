@@ -6,6 +6,7 @@ from .errors import AtmosphereError
 from ._atmosphere_solver import AtmosphereSolver
 from .TP_profile import Profile
 from .terminator import TwoSectorTerminator
+from ._stellar_grid import resolve_legacy_het
 
 
 class TransitDepthCalculator:
@@ -15,8 +16,8 @@ class TransitDepthCalculator:
                                     "K", "Na", "NH3", "SO2", "TiO", "VO"],
                  downsample=1, stellar_grid='newera'):
         '''
-        Physical parameters use SI, except stellar logg (log10 cgs),
-        [Fe/H] (dex), and depth offsets (ppm).
+        Physical parameters use SI, except stellar logg (log10 cgs) and
+        [Fe/H] (dex).
 
         Parameters
         ----------
@@ -64,14 +65,15 @@ class TransitDepthCalculator:
                        add_collisional_absorption=True,
                        cloudtop_pressure=np.inf, cloud_fraction=1,
                        custom_abundances=None,
-                       T_star=None, T_spot=None, spot_cov_frac=None,
+                       T_star=None, T_het=None, f_het=None,
                        ri=None, frac_scale_height=1, number_density=0,
                        part_size=1e-6, part_size_std=0.5, P_quench=1e-99,
                        full_output=False, min_abundance=1e-99,
                        min_cross_sec=1e-99, stellar_blackbody=False,
-                       zero_opacities=[], *, T_fac=None, fac_cov_frac=None,
-                       logg_phot=4.5, logg_spot=None, logg_fac=None, feh=0.,
-                       stellar_grid_only=False, validate_T_grid=True):
+                       zero_opacities=[], *, T_het2=None, f_het2=None,
+                       logg_star=4.5, logg_het=None, logg_het2=None,
+                       feh_star=0., stellar_grid_only=False,
+                       validate_T_grid=True, T_spot=None, spot_cov_frac=None):
         '''
         Computes transit depths at a range of wavelengths.  To choose bins,
         call change_wavelength_bins().
@@ -143,22 +145,26 @@ class TransitDepthCalculator:
             of self.P_grid[4].  Grid-format abundances are interpolated
             onto the atmospheric layers.
         T_star : float, optional
-            Effective temperature of the star.  If you specify this and
-            use wavelength binning, the wavelength binning becomes
+            Effective temperature of the stellar photosphere.  If you specify
+            this and use wavelength binning, the wavelength binning becomes
             more accurate.
-        T_spot : float, optional
-            Effective temperature of the star spots. This can be used to make
-            wavelength dependent correction to the observed transit depths.
-        spot_cov_frac : float, optional
-            The spot covering fraction of the star by area. This can be used to
-            make wavelength dependent correction to the transit depths.
-        T_fac, fac_cov_frac : float, optional
-            Facula temperature (K) and area fraction. Combined spot and facula
-            fractions must be nonnegative and sum to at most one.
-        logg_phot, logg_spot, logg_fac : float, optional
-            Stellar log10 gravity in cgs. Spots/faculae inherit logg_phot,
-            whose default is 4.5.
-        feh : float, optional
+        T_het, f_het : float or array, optional
+            Temperature (K) and covering fraction of an unocculted stellar
+            heterogeneity, which may be cooler (spots) or hotter (faculae)
+            than the photosphere.  The transit depths are multiplied by the
+            transit light source factor S_phot / S_star, where S_star =
+            (1 - f_het - f_het2) S_phot + f_het S_het + f_het2 S_het2.  With
+            wavelength bins set, each may also be an array with one value per
+            bin, e.g. for visits observed at different stellar activity
+            levels; bins sharing the same values share one correction.
+            T_spot and spot_cov_frac are accepted as older names.
+        T_het2, f_het2 : float or array, optional
+            A second heterogeneity, as above.  f_het and f_het2 must be
+            nonnegative and sum to at most one.
+        logg_star, logg_het, logg_het2 : float, optional
+            Stellar log10 gravity in cgs.  The heterogeneities inherit
+            logg_star, whose default is 4.5.
+        feh_star : float, optional
             Stellar [Fe/H] in dex, shared by all components (default 0).
         stellar_grid_only : bool, optional
             Reject temperatures outside the stellar grid, rather than use
@@ -213,6 +219,7 @@ class TransitDepthCalculator:
             stellar_spectrum, radii, P_profile, T_profile, mu_profile,
             atm_abundances, unbinned_depths, unbinned_wavelengths
        '''
+        T_het, f_het = resolve_legacy_het(T_het, f_het, T_spot, spot_cov_frac)
         if isinstance(t_p_profile, TwoSectorTerminator):
             if cloud_fraction != 1:
                 raise ValueError(
@@ -227,11 +234,10 @@ class TransitDepthCalculator:
                 scattering_ref_wavelength=scattering_ref_wavelength,
                 add_collisional_absorption=add_collisional_absorption,
                 cloud_fraction=1, custom_abundances=custom_abundances,
-                T_star=T_star, T_spot=T_spot,
-                spot_cov_frac=spot_cov_frac, ri=ri,
-                T_fac=T_fac, fac_cov_frac=fac_cov_frac,
-                logg_phot=logg_phot, logg_spot=logg_spot,
-                logg_fac=logg_fac, feh=feh, stellar_grid_only=stellar_grid_only,
+                T_star=T_star, T_het=T_het, f_het=f_het, ri=ri,
+                T_het2=T_het2, f_het2=f_het2, logg_star=logg_star,
+                logg_het=logg_het, logg_het2=logg_het2, feh_star=feh_star,
+                stellar_grid_only=stellar_grid_only,
                 validate_T_grid=validate_T_grid,
                 frac_scale_height=frac_scale_height,
                 number_density=number_density, part_size=part_size,
@@ -296,12 +302,11 @@ class TransitDepthCalculator:
             scattering_ref_wavelength=scattering_ref_wavelength,
             add_collisional_absorption=add_collisional_absorption,
             cloudtop_pressure=cloudtop_pressure,
-            custom_abundances=custom_abundances, T_star=T_star, T_spot=T_spot,
-            spot_cov_frac=spot_cov_frac, ri=ri,
-            T_fac=T_fac, fac_cov_frac=fac_cov_frac,
-            logg_phot=logg_phot, logg_spot=logg_spot,
-            logg_fac=logg_fac, feh=feh, stellar_grid_only=stellar_grid_only,
-            validate_T_grid=validate_T_grid,
+            custom_abundances=custom_abundances, T_star=T_star, T_het=T_het,
+            f_het=f_het, ri=ri, T_het2=T_het2, f_het2=f_het2,
+            logg_star=logg_star, logg_het=logg_het, logg_het2=logg_het2,
+            feh_star=feh_star, stellar_grid_only=stellar_grid_only,
+            validate_T_grid=validate_T_grid, per_bin_het=True,
             frac_scale_height=frac_scale_height,
             number_density=number_density, part_size=part_size,
             part_size_std=part_size_std, P_quench=P_quench,

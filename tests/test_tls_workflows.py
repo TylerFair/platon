@@ -28,8 +28,8 @@ FIXTURE = Path(__file__).parent / 'fixtures' / 'cool_star_tls_native.json'
 @pytest.fixture
 def stellar_cache(tmp_path):
     return generate_stellar_grid(
-        tmp_path / 'stellar.npz', logg=STELLAR_PARAMS['logg_phot'],
-        feh=STELLAR_PARAMS['feh'], temperatures=np.arange(2300., 5001., 100.))
+        tmp_path / 'stellar.npz', logg=STELLAR_PARAMS['logg_star'],
+        feh=STELLAR_PARAMS['feh_star'], temperatures=np.arange(2300., 5001., 100.))
 
 
 def _platon_log_integral(flux, source_edges, target):
@@ -44,7 +44,7 @@ def _platon_log_integral(flux, source_edges, target):
 @pytest.mark.real_stellar_grid
 def test_default_cool_star_tls_matches_native_reference(resolving_power, tolerance_ppm):
     reference = json.loads(FIXTURE.read_text())
-    params = reference['parameters']
+    params = STELLAR_PARAMS  # reference['parameters'], with current names
     scenario = next(row for row in reference['scenarios']
                     if row['resolving_power'] == resolving_power)
     bins = np.asarray(scenario['wavelength_bins_m'])
@@ -55,9 +55,9 @@ def test_default_cool_star_tls_matches_native_reference(resolving_power, toleran
     with patch.dict('sys.modules', {'pymsg': None, 'h5py': None}):
         grid = load_stellar_grid()
         phot, spot = [np.interp(native_centers, grid.wavelengths_m,
-                               grid.interpolate(t, params['logg_phot'], params['feh']))
-                      for t in (params['T_star'], params['T_spot'])]
-    f = params['spot_cov_frac']
+                               grid.interpolate(t, params['logg_star'], params['feh_star']))
+                      for t in (params['T_star'], params['T_het'])]
+    f = params['f_het']
     mixed = (1 - f) * phot + f * spot
     phot_integrals = np.diff(_platon_log_integral(phot, native_edges, bins), axis=1)[:, 0]
     mixed_integrals = np.diff(_platon_log_integral(mixed, native_edges, bins), axis=1)[:, 0]
@@ -75,14 +75,14 @@ def test_stellar_cache_and_tls_without_msg_hdf5_or_atmospheric_download(tmp_path
             patch('platon._get_data.get_data_if_needed',
                   side_effect=AssertionError('Stellar cache downloaded opacity data')):
         cache = generate_stellar_grid(
-            tmp_path / 'stellar.npz', logg=STELLAR_PARAMS['logg_phot'],
-            feh=STELLAR_PARAMS['feh'], temperatures=np.arange(2300., 5001., 100.))
+            tmp_path / 'stellar.npz', logg=STELLAR_PARAMS['logg_star'],
+            feh=STELLAR_PARAMS['feh_star'], temperatures=np.arange(2300., 5001., 100.))
         grid = load_stellar_grid(cache)
         waves = grid.wavelengths_m
-        phot, spot = [grid.interpolate(t, STELLAR_PARAMS['logg_phot'],
-                                       STELLAR_PARAMS['feh'])
-                      for t in (STELLAR_PARAMS['T_star'], STELLAR_PARAMS['T_spot'])]
-        f = STELLAR_PARAMS['spot_cov_frac']
+        phot, spot = [grid.interpolate(t, STELLAR_PARAMS['logg_star'],
+                                       STELLAR_PARAMS['feh_star'])
+                      for t in (STELLAR_PARAMS['T_star'], STELLAR_PARAMS['T_het'])]
+        f = STELLAR_PARAMS['f_het']
         correction = phot / ((1 - f) * phot + f * spot)
         np.savetxt(tmp_path / 'stellar_tls.csv', np.column_stack((waves, correction)),
                    delimiter=',', header='wavelength_m,tls_factor')
@@ -137,7 +137,7 @@ def test_transit_tls_jit_and_host_agree_with_default_bundle(tls_calculator):
     profile = tiny_profile(390.)
     args = (profile, RS, MP, RP)
     _, clear, _ = calc.compute_depths(
-        *args, **dict(STELLAR_PARAMS, spot_cov_frac=0.), stellar_grid_only=True)
+        *args, **dict(STELLAR_PARAMS, f_het=0.), stellar_grid_only=True)
     _, tls, info = calc.compute_depths(
         *args, **STELLAR_PARAMS, stellar_grid_only=True, full_output=True)
     _, correction = calc.atm.get_stellar_spectrum(
@@ -169,7 +169,7 @@ def test_forward_default_and_generated_cache_agree(tls_calculator, stellar_cache
         wavelengths, depths, _ = calc.compute_depths(
             profile, RS, MP, RP, **STELLAR_PARAMS, stellar_grid_only=True)
         _, clean, _ = calc.compute_depths(
-            profile, RS, MP, RP, **dict(STELLAR_PARAMS, spot_cov_frac=0.),
+            profile, RS, MP, RP, **dict(STELLAR_PARAMS, f_het=0.),
             stellar_grid_only=True)
         return wavelengths, depths, clean
 
@@ -198,14 +198,14 @@ def test_tls_priors_relative_offsets_and_short_dynesty(tls_calculator, tmp_path,
         RS, MP, RP, T=390., **STELLAR_PARAMS, stellar_grid_only=True,
         transit_offsets={'offset_nirspec': (2, 4)})
     fit.add_gaussian_fit_param('T_star', 50.)
-    fit.add_uniform_fit_param('T_spot', 2300., 4500.)
-    fit.add_uniform_fit_param('spot_cov_frac', 0., .3)
+    fit.add_uniform_fit_param('T_het', 2300., 4500.)
+    fit.add_uniform_fit_param('f_het', 0., .3)
     fit.add_uniform_fit_param('offset_nirspec', -5e-4, 5e-4)
-    assert fit.all_params['T_spot'].best_guess == 2550.
+    assert fit.all_params['T_het'].best_guess == 2550.
     assert fit.all_params['stellar_grid'].best_guess == 'newera'
     assert fit.all_params['stellar_grid_only'].best_guess is True
     assert 'offset_niriss' not in fit.all_params
-    assert {'T_star', 'T_spot', 'spot_cov_frac'}.issubset(fit.fit_param_names)
+    assert {'T_star', 'T_het', 'f_het'}.issubset(fit.fit_param_names)
     # Run the real sampler and public calculator on synthetic atmospheric data.
     # Keep the driver's parameter-estimate output in the test directory.
     monkeypatch.chdir(tmp_path)

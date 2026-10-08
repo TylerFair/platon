@@ -7,7 +7,7 @@ import zipfile
 
 
 def package(output, source=None):
-    source = Path(source) if source else Path(__file__).resolve().parents[1] / 'platon/stellar_data'
+    source = Path(source) if source else Path(__file__).resolve().parents[1] / 'platon/data/stellar_data'
     names = ['README.md', 'newera_jwst.json', 'validation.json', 'newera_jwst.npz']
     names += [f'newera_jwst_feh_{i:02d}.npz' for i in range(10)]
     output = Path(output)
@@ -30,7 +30,7 @@ def package(output, source=None):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('output', type=Path)
-    parser.add_argument('--source', type=Path, default=Path('platon/stellar_data'),
+    parser.add_argument('--source', type=Path, default=Path('platon/data/stellar_data'),
                         help='Directory containing the release grid files')
     args = parser.parse_args()
     package(args.output, args.source)

@@ -19,7 +19,8 @@ from ._get_data import get_data_if_needed
 from ._mie_cache import MieCache
 from .errors import AtmosphereError
 from ._stellar_grid import (load_stellar_grid, resolve_stellar_grid,
-                            wavelength_brackets, stellar_components)
+                            wavelength_brackets, stellar_components,
+                            resolve_legacy_het)
 
 # Data caches shared between calculator instances, so that constructing many
 # calculators doesn't repeatedly read gigabytes from disk or duplicate arrays
@@ -600,22 +601,25 @@ class AtmosphereSolver:
                     "{} Pa unless it is np.inf".format(
                         cloudtop_pressure, minimum, maximum))
 
-    def get_stellar_spectrum(self, T_star, T_spot, spot_cov_frac,
+    def get_stellar_spectrum(self, T_star, T_het=None, f_het=None,
                              blackbody=False, use_full_lambdas=False, *,
-                             T_fac=None, fac_cov_frac=None, logg_phot=4.5,
-                             logg_spot=None, logg_fac=None, feh=0.,
-                             stellar_grid_only=False):
+                             T_het2=None, f_het2=None, logg_star=4.5,
+                             logg_het=None, logg_het2=None, feh_star=0.,
+                             stellar_grid_only=False, T_spot=None,
+                             spot_cov_frac=None):
         """Host stellar spectrum and TLS correction, matching the JIT core.
 
         NewEra supplies 0.6--28.5 micron spectra. Beyond that range a Planck
         tail, normalized at the nearest grid boundary, extends each component.
+        T_spot and spot_cov_frac are accepted as the older names of T_het and
+        f_het.
         """
+        T_het, f_het = resolve_legacy_het(T_het, f_het, T_spot, spot_cov_frac)
         lambdas = self.orig_lambda_grid if use_full_lambdas else self.lambda_grid
         temps, gravities, fractions, in_grid = stellar_components(
             self.stellar_grid if T_star is not None and not blackbody else None,
-            T_star, T_spot, spot_cov_frac, T_fac,
-            fac_cov_frac, logg_phot, logg_spot, logg_fac, feh, blackbody,
-            stellar_grid_only)
+            T_star, T_het, f_het, T_het2, f_het2, logg_star, logg_het,
+            logg_het2, feh_star, blackbody, stellar_grid_only)
         if T_star is None:
             return np.ones(len(lambdas)), np.ones(len(lambdas))
 
@@ -623,7 +627,7 @@ class AtmosphereSolver:
             planck = np.pi * planck_np(lambdas, temps[i])
             if not in_grid[i]:
                 return planck
-            flux = self.stellar_grid.interpolate(temps[i], gravities[i], feh)
+            flux = self.stellar_grid.interpolate(temps[i], gravities[i], feh_star)
             waves = self.stellar_grid.wavelengths_m
             result = np.interp(lambdas, waves, flux)
             for boundary, value, outside in ((waves[0], flux[0], lambdas < waves[0]),
@@ -632,12 +636,12 @@ class AtmosphereSolver:
             return result
 
         phot = component(0)
-        f_spot, f_fac = fractions
-        spectrum = (1 - f_spot - f_fac) * phot
-        if f_spot:
-            spectrum += f_spot * component(1)
-        if f_fac:
-            spectrum += f_fac * component(2)
+        f_het, f_het2 = fractions
+        spectrum = (1 - f_het - f_het2) * phot
+        if f_het:
+            spectrum += f_het * component(1)
+        if f_het2:
+            spectrum += f_het2 * component(2)
         return spectrum, phot / spectrum
 
     # ------------------------------------------------------------------

@@ -60,6 +60,14 @@ platon.fit\_info module
     :undoc-members:
     :show-inheritance:
 
+platon.observations module
+--------------------------
+
+.. automodule:: platon.observations
+    :members:
+    :undoc-members:
+    :show-inheritance:
+
 platon.stellar\_grid module
 ---------------------------
 

@@ -8,6 +8,7 @@ from . import _forward_model as fm
 from ._forward_model import planck_np
 from .errors import AtmosphereError
 from ._atmosphere_solver import AtmosphereSolver
+from ._stellar_grid import resolve_legacy_het
 from ._forward_prep import prepare_forward_inputs, atm_info_dict
 
 
@@ -111,33 +112,36 @@ class EclipseDepthCalculator:
                        scattering_slope=4, scattering_ref_wavelength=1e-6,
                        add_collisional_absorption=True,
                        cloudtop_pressure=np.inf, custom_abundances=None,
-                       T_spot=None, spot_cov_frac=None,
+                       T_het=None, f_het=None,
                        ri=None, frac_scale_height=1, number_density=0,
                        part_size=1e-6, part_size_std=0.5, P_quench=1e-99,
                        stellar_blackbody=False, full_output=False,
                        zero_opacities=[], surface_type=None,
                        semimajor_axis=None, surface_temp=None,
-                       surface_pressure=np.inf, *, T_fac=None, fac_cov_frac=None,
-                       logg_phot=4.5, logg_spot=None, logg_fac=None, feh=0.,
-                       stellar_grid_only=False, validate_T_grid=True):
-        '''Compute eclipse depths using photosphere, spot, and facula spectra.
+                       surface_pressure=np.inf, *, T_het2=None, f_het2=None,
+                       logg_star=4.5, logg_het=None, logg_het2=None,
+                       feh_star=0., stellar_grid_only=False,
+                       validate_T_grid=True, T_spot=None, spot_cov_frac=None):
+        '''Compute eclipse depths relative to a star with a photosphere and
+        up to two heterogeneities.
 
-        Physical parameters use SI, except stellar logg (log10 cgs),
-        [Fe/H] (dex), and depth offsets (ppm). Shared atmospheric parameters
-        are described by TransitDepthCalculator.compute_depths.
+        Physical parameters use SI, except stellar logg (log10 cgs) and
+        [Fe/H] (dex). Shared atmospheric parameters are described by
+        TransitDepthCalculator.compute_depths.
 
         Parameters
         ----------
         t_p_profile : Profile
             A Profile object from TP_profile
-        T_fac : float, optional
-            Facula effective temperature in K.
-        fac_cov_frac : float, optional
-            Facula area fraction. Spot and facula fractions sum to at most one.
-        logg_phot, logg_spot, logg_fac : float, optional
-            Log10 surface gravities in cgs. Photosphere defaults to 4.5;
-            spots and faculae inherit its gravity when omitted.
-        feh : float, optional
+        T_het, f_het, T_het2, f_het2 : float, optional
+            Temperatures (K) and covering fractions of up to two stellar
+            heterogeneities, cooler or hotter than the photosphere; the
+            fractions sum to at most one.  T_spot and spot_cov_frac are
+            accepted as older names of T_het and f_het.
+        logg_star, logg_het, logg_het2 : float, optional
+            Log10 surface gravities in cgs. The photosphere defaults to 4.5;
+            the heterogeneities inherit its gravity when omitted.
+        feh_star : float, optional
             Shared stellar [Fe/H] in dex (default 0).
         stellar_grid_only : bool, optional
             Reject temperatures outside the stellar grid (default False).
@@ -146,6 +150,7 @@ class EclipseDepthCalculator:
             Require atmospheric temperatures within the opacity grid (default
             True). False clamps chemistry and opacity lookup at grid edges.
         '''
+        T_het, f_het = resolve_legacy_het(T_het, f_het, T_spot, spot_cov_frac)
         T_profile = np.asarray(t_p_profile.temperatures, dtype=np.float64)
         P_profile = np.asarray(t_p_profile.pressures, dtype=np.float64)
         bot_pressure = min(cloudtop_pressure, surface_pressure)
@@ -173,11 +178,10 @@ class EclipseDepthCalculator:
             scattering_ref_wavelength=scattering_ref_wavelength,
             add_collisional_absorption=add_collisional_absorption,
             cloudtop_pressure=cloudtop_pressure,
-            custom_abundances=custom_abundances, T_star=T_star, T_spot=T_spot,
-            spot_cov_frac=spot_cov_frac, ri=ri,
-            T_fac=T_fac, fac_cov_frac=fac_cov_frac,
-            logg_phot=logg_phot, logg_spot=logg_spot,
-            logg_fac=logg_fac, feh=feh, stellar_grid_only=stellar_grid_only,
+            custom_abundances=custom_abundances, T_star=T_star, T_het=T_het,
+            f_het=f_het, ri=ri, T_het2=T_het2, f_het2=f_het2,
+            logg_star=logg_star, logg_het=logg_het, logg_het2=logg_het2,
+            feh_star=feh_star, stellar_grid_only=stellar_grid_only,
             validate_T_grid=validate_T_grid,
             frac_scale_height=frac_scale_height,
             number_density=number_density, part_size=part_size,

@@ -53,15 +53,15 @@ def test_first_load_downloads_verified_shards_once(bundle, capsys):
     assert grid.spectra.resident_nbytes == 0
     assert grid.metadata['missing_model_policy'] == 'interpolate_isolated_temperature'
     np.testing.assert_allclose(grid.interpolate(4000., 4.5, 0.), 1.e12 * np.exp(.008), rtol=2e-6)
-    assert len(list((package / 'stellar_data').glob('*.npz'))) == 11
+    assert len(list((package / 'data/stellar_data').glob('*.npz'))) == 11
     output = capsys.readouterr().out
     assert 'Downloading NewEra stellar spectra' in output
     assert '[100%]' in output
     archive.unlink()  # Reuse must work with no download source.
-    assert download_stellar_grid() == package / 'stellar_data/newera_jwst.npz'
+    assert download_stellar_grid() == package / 'data/stellar_data/newera_jwst.npz'
     assert grids.load_stellar_grid() is grid
     assert capsys.readouterr().out == ''
-    assert not list(package.glob('.platon-download-*'))
+    assert not list(package.rglob('.platon-download-*'))
 
 
 def test_first_tls_call_installs_bundle(tiny_calculator, bundle, monkeypatch):
@@ -76,7 +76,7 @@ def test_first_tls_call_installs_bundle(tiny_calculator, bundle, monkeypatch):
     assert not grids.resolve_stellar_grid().exists()
     _, depths, _ = tiny_calculator.compute_depths(
         *args,
-        T_star=4000., T_spot=3200., spot_cov_frac=.1)
+        T_star=4000., T_het=3200., f_het=.1)
     assert np.all(np.isfinite(depths))
     assert grids.resolve_stellar_grid().is_file()
     assert tiny_calculator.atm.stellar_grid.spectra.resident_nbytes > 0
@@ -137,11 +137,11 @@ def test_bad_checksum_preserves_existing_files_and_cleans_staging(bundle, monkey
     monkeypatch.setattr(platon, '__stellar_grid_sha256__', '0' * 64)
     with pytest.raises(RuntimeError, match='checksum mismatch'):
         download_stellar_grid(force=True)
-    assert not list(package.glob('.platon-download-*'))
+    assert not list(package.rglob('.platon-download-*'))
     if installed:
         assert path.read_bytes() == original
     else:
-        assert not (package / 'stellar_data').exists()
+        assert not (package / 'data/stellar_data').exists()
 
 
 def test_failed_network_explains_offline_alternatives(bundle):
@@ -149,7 +149,8 @@ def test_failed_network_explains_offline_alternatives(bundle):
     archive.unlink()
     with pytest.raises(RuntimeError, match=r'download_stellar_grid\(\).*stellar_grid='):
         grids.load_stellar_grid()
-    assert list(package.iterdir()) == []
+    assert not (package / 'data/stellar_data').exists()
+    assert not list(package.rglob('.platon-download-*'))
 
 
 @pytest.mark.parametrize('bad_name', ['../outside', 'stellar_data/../../outside'])
@@ -160,7 +161,8 @@ def test_unsafe_archive_rejected_without_install(bundle, monkeypatch, bad_name):
     monkeypatch.setattr(platon, '__stellar_grid_sha256__', hashlib.sha256(archive.read_bytes()).hexdigest())
     with pytest.raises(RuntimeError, match='Unsafe path'):
         download_stellar_grid()
-    assert list(package.iterdir()) == []
+    assert not (package / 'data/stellar_data').exists()
+    assert not list(package.rglob('.platon-download-*'))
 
 
 def test_missing_shard_is_reinstalled_and_force_refreshes(bundle):

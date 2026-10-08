@@ -12,9 +12,20 @@ import zipfile
 from platon import __data_url__, __md5sum__
 
 
+# Downloaded separately from the opacity archive, into the same data folder
+STELLAR_FOLDER = "stellar_data"
+
+
+def has_opacity_data(data_dir):
+    """Whether data_dir holds the opacity archive, not just stellar grids."""
+    data_dir = Path(data_dir)
+    return data_dir.is_dir() and any(
+        path.name != STELLAR_FOLDER for path in data_dir.iterdir())
+
+
 def get_data_if_needed():
     basedir = Path(__file__).resolve().parent
-    if not (basedir / "data").is_dir():
+    if not has_opacity_data(basedir / "data"):
         get_data(basedir)
     marker = basedir / "md5sum"
     curr_md5sum = marker.read_text().strip() if marker.is_file() else None
@@ -41,12 +52,16 @@ def get_data(target_dir):
     """Download, verify and atomically install atmospheric data."""
     print("Data URL", __data_url__)
     _download_and_install(__data_url__, target_dir, "data", __md5sum__,
-                          algorithm="md5", marker="md5sum")
+                          algorithm="md5", marker="md5sum",
+                          keep=(STELLAR_FOLDER,))
 
 
 def _download_and_install(url, target_dir, folder, expected_checksum, *,
-                          algorithm="sha256", marker=None, required_files=()):
-    """Stream a verified ZIP into staging, then replace the installed folder."""
+                          algorithm="sha256", marker=None, required_files=(),
+                          keep=()):
+    """Stream a verified ZIP into staging, then replace the installed folder.
+    Entries of the old folder named in `keep` (and absent from the archive)
+    are moved into the new one."""
     target_dir = Path(target_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=".platon-download-", dir=target_dir) as temp:
@@ -104,10 +119,17 @@ def _download_and_install(url, target_dir, folder, expected_checksum, *,
         try:
             os.replace(staged_data, destination)
             installed = True
+            for name in keep:
+                if (backup / name).exists() and not (destination / name).exists():
+                    os.replace(backup / name, destination / name)
             if marker is not None:
                 os.replace(staged_marker, target_dir / marker)
         except OSError:
             if installed:
+                for name in keep:
+                    if had_data and (destination / name).exists() and \
+                            not (backup / name).exists():
+                        os.replace(destination / name, backup / name)
                 shutil.rmtree(destination)
             if had_data:
                 os.replace(backup, destination)

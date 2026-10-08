@@ -1,6 +1,6 @@
 # Synthetic truth: Rs=0.40 R_sun, Mp=0.30 M_jup, Rp=0.80 R_jup, T=700 K.
 # Solar equilibrium chemistry; T_star=3400 K, logg=4.9, [Fe/H]=0.0.
-# T_spot=3000 K, spot coverage=0.05, no faculae; G395H offset=+200 ppm.
+# One heterogeneity (spots): T_het=3000 K, f_het=0.05; G395H offset=+200 ppm.
 import numpy as np
 from pathlib import Path
 
@@ -8,8 +8,7 @@ from platon.transit_depth_calculator import TransitDepthCalculator
 from platon.TP_profile import Profile
 from platon.constants import M_jup, R_sun, R_jup
 
-p = Profile()
-p.set_isothermal(700)
+p = Profile.isothermal(700)
 calculator = TransitDepthCalculator()
 rng = np.random.default_rng(42)
 data_dir = Path(__file__).resolve().parent
@@ -26,7 +25,7 @@ for filename, intervals, error, offset in instruments:
     calculator.change_wavelength_bins(1e-6*bins)
     _, depths, _ = calculator.compute_depths(
         p, 0.40*R_sun, 0.30*M_jup, 0.80*R_jup, logZ=0, CO_ratio=0.53,
-        T_star=3400, T_spot=3000, spot_cov_frac=0.05, logg_phot=4.9, feh=0.0)
+        T_star=3400, T_het=3000, f_het=0.05, logg_star=4.9, feh_star=0.0)
     noisy_depths = 1e6*depths + offset + rng.normal(0, error, len(depths))
     rows = np.column_stack((bins, noisy_depths, np.full(len(depths), error)))
     np.savetxt(data_dir / filename, rows, delimiter=",",

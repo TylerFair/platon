@@ -20,20 +20,21 @@ bins = np.column_stack((edges[:-1], edges[1:]))
 # NewEra downloads automatically on first use
 calculator = TransitDepthCalculator()
 calculator.change_wavelength_bins(bins)
-# logg is log10 gravity in cgs; feh is [Fe/H] in dex
-star = dict(T_star=3400, logg_phot=4.9, feh=0.0)
+# logg_star is log10 gravity in cgs; feh_star is [Fe/H] in dex.  Each
+# heterogeneity may be cooler (spots) or hotter (faculae) than the photosphere
+star = dict(T_star=3400, logg_star=4.9, feh_star=0.0)
 wavelengths, clean, _ = calculator.compute_depths(
     p, Rs, Mp, Rp, logZ=0, CO_ratio=0.53, **star)
 _, spotted, _ = calculator.compute_depths(
     p, Rs, Mp, Rp, logZ=0, CO_ratio=0.53,
-    T_spot=3000, spot_cov_frac=0.05, **star)
+    T_het=3000, f_het=0.05, **star)
 _, mixed, _ = calculator.compute_depths(
     p, Rs, Mp, Rp, logZ=0, CO_ratio=0.53,
-    T_spot=3000, spot_cov_frac=0.05, T_fac=3600, fac_cov_frac=0.03, **star)
+    T_het=3000, f_het=0.05, T_het2=3600, f_het2=0.03, **star)
 
 plt.plot(1e6*wavelengths, 1e6*clean, label="Clean")
-plt.plot(1e6*wavelengths, 1e6*spotted, label="5% spots (3000 K)")
-plt.plot(1e6*wavelengths, 1e6*mixed, label="Spots + 3% faculae (3600 K)")
+plt.plot(1e6*wavelengths, 1e6*spotted, label="5% at 3000 K (spots)")
+plt.plot(1e6*wavelengths, 1e6*mixed, label="+ 3% at 3600 K (faculae)")
 plt.xlabel("Wavelength (um)")
 plt.ylabel("Transit depth (ppm)")
 plt.legend()

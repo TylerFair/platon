@@ -18,6 +18,55 @@ def _pack_scalars(**kwargs):
     return scalars
 
 
+def _visit_heterogeneities(atm, T_star, T_het, f_het, T_het2, f_het2,
+                           per_bin_het):
+    """Group wavelength bins by heterogeneity settings.
+
+    Each of T_het, f_het, T_het2, f_het2 is a scalar (or None), or, when
+    per_bin_het is allowed, an array with one value per wavelength bin.  An
+    unset temperature means no contrast with the photosphere, and an unset
+    fraction means no coverage.
+    Returns the distinct (T_het, f_het, T_het2, f_het2) rows in order of
+    first appearance, and the visit index of each bin (None for one visit).
+    """
+    values = (T_het, f_het, T_het2, f_het2)
+    if all(np.ndim(value) == 0 for value in values):
+        return [values], None
+    if not per_bin_het:
+        raise ValueError(
+            "T_het, f_het, T_het2 and f_het2 must be scalars here; per-bin "
+            "(per-visit) heterogeneities are supported for transit depths")
+    if atm.wavelength_bins is None:
+        raise ValueError(
+            "Per-bin heterogeneities need wavelength bins; call "
+            "change_wavelength_bins first")
+    n_bins = len(atm.wavelength_bins)
+    columns = []
+    # Without a photosphere no heterogeneity may be active, so any value works
+    no_contrast = 0. if T_star is None else T_star
+    unset = (no_contrast, 0., no_contrast, 0.)
+    for name, value, default in zip(("T_het", "f_het", "T_het2", "f_het2"),
+                                    values, unset):
+        column = np.asarray(default if value is None else value,
+                            dtype=np.float64)
+        if column.ndim not in (0, 1) or column.ndim == 1 and \
+                column.shape != (n_bins,):
+            raise ValueError(
+                "{} must be a scalar or have one value per wavelength bin "
+                "({}), not shape {}".format(name, n_bins, column.shape))
+        columns.append(np.broadcast_to(column, (n_bins,)))
+    rows = np.column_stack(columns)
+    unique, first, inverse = np.unique(
+        rows, axis=0, return_index=True, return_inverse=True)
+    order = np.argsort(first)
+    rank = np.empty(len(order), dtype=np.int32)
+    rank[order] = np.arange(len(order))
+    visit_rows = [tuple(float(x) for x in unique[i]) for i in order]
+    if len(visit_rows) == 1:
+        return visit_rows, None
+    return visit_rows, rank[inverse.ravel()].astype(np.int32)
+
+
 def prepare_forward_inputs(atm, *, star_radius, planet_mass, planet_radius,
                            P_profile, T_profile, logZ, CO_ratio, CH4_mult,
                            gases, vmrs, add_gas_absorption,
@@ -25,16 +74,16 @@ def prepare_forward_inputs(atm, *, star_radius, planet_mass, planet_radius,
                            scattering_factor, scattering_slope,
                            scattering_ref_wavelength,
                            add_collisional_absorption, cloudtop_pressure,
-                           custom_abundances, T_star, T_spot, spot_cov_frac,
+                           custom_abundances, T_star, T_het, f_het,
                            ri, frac_scale_height, number_density, part_size,
                            part_size_std, P_quench, zero_opacities,
                            stellar_blackbody, bot_pressure,
                            min_abundance=1e-99, min_cross_sec=1e-99,
                            surface_pressure=np.inf, a_over_Rs=0.0,
-                           surface_temp=None, redist=0.0, T_fac=None,
-                           fac_cov_frac=None, logg_phot=4.5, logg_spot=None,
-                           logg_fac=None, feh=0., stellar_grid_only=False,
-                           validate_T_grid=True):
+                           surface_temp=None, redist=0.0, T_het2=None,
+                           f_het2=None, logg_star=4.5, logg_het=None,
+                           logg_het2=None, feh_star=0., stellar_grid_only=False,
+                           validate_T_grid=True, per_bin_het=False):
     """Host-side preparation shared by the transit and eclipse calculators.
     Returns (ForwardConfig, ForwardInputs, host bookkeeping dict)."""
     for name, value in (('star_radius', star_radius), ('planet_mass', planet_mass),
@@ -122,13 +171,15 @@ def prepare_forward_inputs(atm, *, star_radius, planet_mass, planet_radius,
 
     n_above, shell_mask = atm.get_above_info(P_profile, bot_pressure)
 
-    temps, gravities, fractions, in_grid = stellar_components(
-        atm.stellar_grid if T_star is not None and not stellar_blackbody else None,
-        T_star, T_spot, spot_cov_frac, T_fac, fac_cov_frac,
-        logg_phot, logg_spot, logg_fac, feh, stellar_blackbody, stellar_grid_only)
-    T_star, T_spot, T_fac = temps
-    logg_phot, logg_spot, logg_fac = gravities
-    spot_cov_frac, fac_cov_frac = fractions
+    grid = atm.stellar_grid if T_star is not None and not stellar_blackbody else None
+    visit_het, bin_visit = _visit_heterogeneities(
+        atm, T_star, T_het, f_het, T_het2, f_het2, per_bin_het)
+    visits = [stellar_components(
+        grid, T_star, *het, logg_star, logg_het, logg_het2, feh_star,
+        stellar_blackbody, stellar_grid_only) for het in visit_het]
+    temps, gravities, fractions, in_grid = visits[0]
+    T_star, T_het, T_het2 = temps
+    f_het, f_het2 = fractions
 
     scalars = _pack_scalars(
         rs=star_radius, mp=planet_mass, rp=planet_radius,
@@ -141,10 +192,8 @@ def prepare_forward_inputs(atm, *, star_radius, planet_mass, planet_radius,
         p_quench=P_quench,
         log10_p_quench=math.log10(max(P_quench, 1e-99)),
         t_star=0.0 if T_star is None else T_star,
-        t_spot=0.0 if T_spot is None else T_spot,
-        spot_frac=spot_cov_frac,
-        t_fac=0.0 if T_fac is None else T_fac, fac_frac=fac_cov_frac,
-        logg_phot=logg_phot, logg_spot=logg_spot, logg_fac=logg_fac, feh=feh,
+        t_het=0.0 if T_het is None else T_het, f_het=f_het,
+        t_het2=0.0 if T_het2 is None else T_het2, f_het2=f_het2,
         fsh=frac_scale_height, num_den=number_density,
         ln_min_xsec=math.log(min_cross_sec),
         log_min_abund=math.log10(min_abundance),
@@ -181,23 +230,35 @@ def prepare_forward_inputs(atm, *, star_radius, planet_mass, planet_radius,
         use_mie=use_mie and add_scattering,
         has_t_star=T_star is not None,
         stellar_in_grid=in_grid[0],
-        spot_in_grid=in_grid[1], fac_in_grid=in_grid[2],
-        has_faculae=fac_cov_frac != 0.0,
-        has_spots=spot_cov_frac != 0.0,
+        has_het=any(visit[2][0] != 0.0 for visit in visits),
+        has_het2=any(visit[2][1] != 0.0 for visit in visits),
+        het_in_grid=tuple(visit[3][1] for visit in visits),
+        het2_in_grid=tuple(visit[3][2] for visit in visits),
+        n_visits=len(visits),
     )
 
     # Decode/interpolate only the selected vertices on the host. The full
-    # stellar cube never resides on the GPU; only three compact spectra do.
+    # stellar cube never resides on the GPU; only three compact spectra per
+    # visit do.  The photosphere is shared, so it is interpolated once.
     stellar_fluxes = None
-    if any(in_grid):
-        stellar_fluxes = np.zeros((3, len(atm.stellar_grid.wavelengths_m)), np.float32)
-        for i, use_grid in enumerate(in_grid):
-            if use_grid:
-                stellar_fluxes[i] = atm.stellar_grid.interpolate(temps[i], gravities[i], feh)
+    if any(any(visit[3]) for visit in visits):
+        stellar_fluxes = np.zeros(
+            (len(visits), 3, len(grid.wavelengths_m)), np.float32)
+        if in_grid[0]:
+            stellar_fluxes[:, 0] = grid.interpolate(T_star, gravities[0], feh_star)
+        for v, (v_temps, v_gravities, _, v_in_grid) in enumerate(visits):
+            for i in (1, 2):
+                if v_in_grid[i]:
+                    stellar_fluxes[v, i] = grid.interpolate(
+                        v_temps[i], v_gravities[i], feh_star)
 
     inputs = ForwardInputs(
         packed=packed, vmrs=vmrs_arr, custom_log_abund=custom_log_abund,
-        eff_xsec=eff_xsec, stellar_fluxes=stellar_fluxes)
+        eff_xsec=eff_xsec, stellar_fluxes=stellar_fluxes,
+        visit_het=None if len(visits) == 1 else np.array(
+            [[v_temps[1], v_fractions[0], v_temps[2], v_fractions[1]]
+             for v_temps, _, v_fractions, _ in visits], np.float32),
+        bin_visit=bin_visit)
 
     host = dict(n_above=n_above, active_species=active_species,
                 P_profile=P_profile, T_profile=T_profile)

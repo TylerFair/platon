@@ -38,7 +38,7 @@ def config(**kwargs):
                   el_idx=-1, h_idx=-1, add_gas=False, add_hminus=False,
                   add_scattering=False, add_collisional=False, sort_layers=False,
                   use_mie=False, has_t_star=True, stellar_in_grid=True,
-                  has_spots=True, spot_in_grid=True, has_faculae=True, fac_in_grid=True)
+                  has_het=True, het_in_grid=(True,), has_het2=True, het2_in_grid=(True,))
     values.update(kwargs)
     return fm.ForwardConfig(**values)
 
@@ -84,10 +84,10 @@ def test_missing_nodes_only_rejected_when_their_weight_is_nonzero():
 
 
 @pytest.mark.parametrize('component, params', [
-    ('T_star', dict(T_star=2200., T_spot=None, spot_cov_frac=0.)),
-    ('T_spot', dict(T_star=4000., T_spot=2200., spot_cov_frac=.1)),
-    ('T_fac', dict(T_star=4000., T_spot=None, spot_cov_frac=0.,
-                   T_fac=2200., fac_cov_frac=.1)),
+    ('T_star', dict(T_star=2200., T_het=None, f_het=0.)),
+    ('T_het', dict(T_star=4000., T_het=2200., f_het=.1)),
+    ('T_het2', dict(T_star=4000., T_het=None, f_het=0.,
+                   T_het2=2200., f_het2=.1)),
 ])
 def test_blackbody_fallback_warns_once_and_strict_errors_name_component(
         monkeypatch, component, params):
@@ -174,17 +174,17 @@ def test_numpy_jit_agree_for_spots_faculae_and_wavelength_tails(encoded):
     grid = synthetic_grid(encoded)
     waves = np.array([.4, .7, .9, 1.3, 4., 5., 8.]) * 1e-6
     atm = host_atmosphere(grid, waves)
-    expected, corr = atm.get_stellar_spectrum(4200., 3200., .1, T_fac=4800.,
-                                            fac_cov_frac=.05, logg_phot=4.3,
-                                            logg_spot=4.1, logg_fac=4.8, feh=-.2)
-    sc = jnp.asarray(_pack_scalars(t_star=4200., t_spot=3200., t_fac=4800.,
-                                  spot_frac=.1, fac_frac=.05, logg_phot=4.3,
-                                  logg_spot=4.1, logg_fac=4.8, feh=-.2), dtype=jnp.float32)
+    expected, corr = atm.get_stellar_spectrum(4200., 3200., .1, T_het2=4800.,
+                                            f_het2=.05, logg_star=4.3,
+                                            logg_het=4.1, logg_het2=4.8, feh_star=-.2)
+    sc = jnp.asarray(_pack_scalars(t_star=4200., t_het=3200., t_het2=4800.,
+                                  f_het=.1, f_het2=.05), dtype=jnp.float32)
     dd = stellar_device(grid, waves)
     run = jax.jit(fm._stellar_spectrum, static_argnums=(0,))
     rows = np.array([grid.interpolate(t, g, -.2) for t, g in
                      ((4200., 4.3), (3200., 4.1), (4800., 4.8))], np.float32)
-    spectrum, correction = run(config(), dd, sc, stellar_fluxes=rows)
+    inp = fm.UnpackedInputs(*[None] * 6, stellar_fluxes=jnp.asarray(rows[None]))
+    spectrum, correction = run(config(), dd, sc, inp)
     np.testing.assert_allclose(spectrum, expected, rtol=4e-6)
     np.testing.assert_allclose(correction, corr, rtol=4e-6)
 
@@ -192,7 +192,7 @@ def test_numpy_jit_agree_for_spots_faculae_and_wavelength_tails(encoded):
 def test_components_validate_active_temperatures_and_fractions(monkeypatch):
     grid = synthetic_grid()
     # An unused spot does not require a valid temperature or logg.
-    result = stellar_components(grid, 4000., -100., 0., logg_phot=4.5)
+    result = stellar_components(grid, 4000., -100., 0., logg_star=4.5)
     assert result[-1] == (True, False, False)
     for spot, fac in ((-.1, 0), (.8, .3), (np.nan, 0)):
         with pytest.raises(AtmosphereError):
@@ -234,8 +234,8 @@ def test_likelihood_passes_stellar_parameters_and_rejects_missing_models():
     from platon.combined_retriever import CombinedRetriever
     from platon.constants import R_sun, M_jup, R_jup
     fit = CombinedRetriever.get_default_fit_info(R_sun, M_jup, R_jup, T=1000.,
-        T_star=4200., T_spot=3200., spot_cov_frac=.1, T_fac=4800., fac_cov_frac=.05,
-        logg_phot=4.3, logg_spot=4.1, logg_fac=4.8, feh=-.2, stellar_grid_only=True)
+        T_star=4200., T_het=3200., f_het=.1, T_het2=4800., f_het2=.05,
+        logg_star=4.3, logg_het=4.1, logg_het2=4.8, feh_star=-.2, stellar_grid_only=True)
     captured = {}
     class Calculator:
         def compute_depths(self, *args, **kwargs):
@@ -245,7 +245,7 @@ def test_likelihood_passes_stellar_parameters_and_rejects_missing_models():
     value = retriever._ln_like([], Calculator(), None, fit, np.array([.01]),
                               np.array([1e-4]), None, None)
     assert np.isfinite(value)
-    for name in ('T_fac', 'fac_cov_frac', 'logg_phot', 'logg_spot', 'logg_fac', 'feh', 'stellar_grid_only'):
+    for name in ('T_het2', 'f_het2', 'logg_star', 'logg_het', 'logg_het2', 'feh_star', 'stellar_grid_only'):
         assert captured[name] == fit._get(name)
     class InvalidCalculator:
         def compute_depths(self, *args, **kwargs):
@@ -338,12 +338,12 @@ def test_transit_core_applies_tls_and_keeps_stellar_cube_off_device(tiny_calcula
     calc = tiny_calculator
     profile = tiny_profile()
     args = (profile, R_sun, M_jup, R_jup)
-    params = dict(T_star=4200., logg_phot=4.3, feh=-.2)
+    params = dict(T_star=4200., logg_star=4.3, feh_star=-.2)
     _, clean, _ = calc.compute_depths(*args, **params)
-    _, tls, info = calc.compute_depths(*args, **params, T_spot=3200., spot_cov_frac=.1,
-                                      T_fac=4800., fac_cov_frac=.05, full_output=True)
-    _, expected = calc.atm.get_stellar_spectrum(4200., 3200., .1, T_fac=4800.,
-                                               fac_cov_frac=.05, logg_phot=4.3, feh=-.2)
+    _, tls, info = calc.compute_depths(*args, **params, T_het=3200., f_het=.1,
+                                      T_het2=4800., f_het2=.05, full_output=True)
+    _, expected = calc.atm.get_stellar_spectrum(4200., 3200., .1, T_het2=4800.,
+                                               f_het2=.05, logg_star=4.3, feh_star=-.2)
     np.testing.assert_allclose(tls, clean * expected, rtol=2e-6)
     np.testing.assert_allclose(info['unbinned_correction_factors'], expected, rtol=2e-6)
     assert 'stellar_spectra' not in calc.atm.device_data()._fields
@@ -354,8 +354,8 @@ def test_binning_reset_and_partial_clouds_keep_stellar_correction(tiny_calculato
     from platon.constants import R_sun, R_jup, M_jup
     calc = tiny_calculator
     args = (tiny_profile(), R_sun, M_jup, R_jup)
-    params = dict(T_star=4200., T_spot=3200., spot_cov_frac=.1,
-                  logg_phot=4.3, feh=-.2, cloudtop_pressure=1e4)
+    params = dict(T_star=4200., T_het=3200., f_het=.1,
+                  logg_star=4.3, feh_star=-.2, cloudtop_pressure=1e4)
     bins = np.array([[.9, 1.3], [2., 3.]]) * 1e-6
     calc.change_wavelength_bins(bins)
     _, cloudy, _ = calc.compute_depths(*args, **params, cloud_fraction=1.)
@@ -374,11 +374,11 @@ def test_eclipse_core_accepts_interpolated_components(tiny_calculator):
     calc = EclipseDepthCalculator.__new__(EclipseDepthCalculator)
     calc.atm = tiny_calculator.atm
     profile = tiny_profile()
-    params = dict(logg_phot=4.3, feh=-.2)
+    params = dict(logg_star=4.3, feh_star=-.2)
     args = (profile, R_sun, M_jup, R_jup, 4200.)
     _, clean, _ = calc.compute_depths(*args, **params)
-    _, tls, _ = calc.compute_depths(*args, **params, T_spot=3200., spot_cov_frac=.1)
-    _, correction = calc.atm.get_stellar_spectrum(4200., 3200., .1, logg_phot=4.3, feh=-.2)
+    _, tls, _ = calc.compute_depths(*args, **params, T_het=3200., f_het=.1)
+    _, correction = calc.atm.get_stellar_spectrum(4200., 3200., .1, logg_star=4.3, feh_star=-.2)
     np.testing.assert_allclose(tls, clean * correction, rtol=3e-6)
     assert np.all(np.isfinite(tls))
 
@@ -387,8 +387,8 @@ def test_binned_tls_matches_explicit_weighted_spectrum(tiny_calculator):
     from platon.constants import R_sun, R_jup, M_jup
     calc = tiny_calculator
     args = (tiny_profile(), R_sun, M_jup, R_jup)
-    params = dict(T_star=4200., T_spot=3200., spot_cov_frac=.1,
-                  T_fac=4800., fac_cov_frac=.05, logg_phot=4.3, feh=-.2)
+    params = dict(T_star=4200., T_het=3200., f_het=.1,
+                  T_het2=4800., f_het2=.05, logg_star=4.3, feh_star=-.2)
     waves, unbinned, info = calc.compute_depths(*args, **params, full_output=True)
     bins = np.array([[.9, 1.3], [2., 3.]]) * 1e-6
     expected = []
@@ -406,9 +406,9 @@ def test_two_sector_recursion_forwards_stellar_components(tiny_calculator):
     calc = tiny_calculator
     cold, hot = Profile.isothermal(800.), Profile.isothermal(1400.)
     model = TwoSectorTerminator(TerminatorSector(cold), TerminatorSector(hot), .3)
-    params = dict(T_star=4200., T_spot=3200., spot_cov_frac=.1,
-                  T_fac=4800., fac_cov_frac=.05, logg_phot=4.3,
-                  logg_spot=4.1, logg_fac=4.8, feh=-.2)
+    params = dict(T_star=4200., T_het=3200., f_het=.1,
+                  T_het2=4800., f_het2=.05, logg_star=4.3,
+                  logg_het=4.1, logg_het2=4.8, feh_star=-.2)
     args = (R_sun, M_jup, R_jup)
     _, a, _ = calc.compute_depths(cold, *args, **params)
     _, b, _ = calc.compute_depths(hot, *args, **params)

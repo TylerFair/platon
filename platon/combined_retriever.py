@@ -3,11 +3,13 @@ import emcee
 from dynesty import NestedSampler
 import dynesty.utils
 import copy
+import warnings
 
 from .psis import psisloo
 from .transit_depth_calculator import TransitDepthCalculator
 from .eclipse_depth_calculator import EclipseDepthCalculator
 from .fit_info import FitInfo
+from ._stellar_grid import resolve_legacy_het
 
 from .constants import METRES_TO_UM, M_jup, R_jup, R_earth, M_earth, R_sun
 from ._params import _UniformParam
@@ -17,6 +19,10 @@ from .TP_profile import Profile
 from .terminator import TwoSectorTerminator
 from .retrieval_result import RetrievalResult
 from .custom_dynesty_result import CustomDynestyResult
+
+# Stellar heterogeneity parameters that can differ between transit visits
+HET_PARAMS = ("T_het", "f_het", "T_het2", "f_het2")
+
 
 class CombinedRetriever:
     _POINTWISE_CACHE_MAX_ENTRIES = 1024
@@ -153,6 +159,30 @@ class CombinedRetriever:
         return names
 
     @staticmethod
+    def _visit_het_kwargs(params_dict, n_points):
+        """T_het, f_het, T_het2 and f_het2 for the transit calculator.  They
+        are scalars unless a visit in transit_visits overrides one (e.g.
+        visit1.f_het), in which case each becomes an array with one value
+        per data point."""
+        values = {name: params_dict.get(name) for name in HET_PARAMS}
+        visits = params_dict.get("transit_visits") or {}
+        overrides = [(start, end, name, params_dict[f"{visit}.{name}"])
+                     for visit, (start, end) in visits.items()
+                     for name in HET_PARAMS
+                     if params_dict.get(f"{visit}.{name}") is not None]
+        if not overrides:
+            return values
+        # An unset temperature means no contrast; an unset fraction, none
+        defaults = dict(T_het=params_dict["T_star"], f_het=0.,
+                        T_het2=params_dict["T_star"], f_het2=0.)
+        arrays = {name: np.full(n_points, defaults[name] if value is None
+                                else value, dtype=np.float64)
+                  for name, value in values.items()}
+        for start, end, name, value in overrides:
+            arrays[name][start:end] = value
+        return arrays
+
+    @staticmethod
     def _apply_offsets(depths, params_dict, kind):
         """Adds each named offset in params_dict[kind + "_offsets"] (kind is
         "transit" or "eclipse") to its index range of the calculated depths,
@@ -193,13 +223,11 @@ class CombinedRetriever:
         Rs = params_dict["Rs"]
         Mp = params_dict["Mp"]
         T_star = params_dict["T_star"]
-        T_spot = params_dict["T_spot"]
-        spot_cov_frac = params_dict["spot_cov_frac"]
-        forward_kwargs = {name: params_dict.get(name, default) for name, default in (
-            ('T_fac', None), ('fac_cov_frac', None), ('logg_phot', 4.5),
-            ('logg_spot', None), ('logg_fac', None), ('feh', 0.),
-            ('stellar_grid_only', False), ('stellar_blackbody', False),
-            ('validate_T_grid', True))}
+        stellar_kwargs = {name: params_dict.get(name, default) for name, default in (
+            ('logg_star', 4.5), ('logg_het', None), ('logg_het2', None),
+            ('feh_star', 0.), ('stellar_grid_only', False),
+            ('stellar_blackbody', False), ('validate_T_grid', True))}
+        het_kwargs = {name: params_dict.get(name) for name in HET_PARAMS}
         frac_scale_height = params_dict["frac_scale_height"]
         number_density = 10.0**params_dict["log_number_density"]
         part_size = 10.**params_dict["log_part_size"]
@@ -277,7 +305,9 @@ class CombinedRetriever:
                     scattering_factor=scatt_factor, scattering_slope=scatt_slope,
                     cloudtop_pressure=cloudtop_P,
                     cloud_fraction=cloud_fraction, T_star=T_star,
-                    T_spot=T_spot, spot_cov_frac=spot_cov_frac, **forward_kwargs,
+                    **self._visit_het_kwargs(
+                        params_dict, len(measured_transit_depths)),
+                    **stellar_kwargs,
                     frac_scale_height=frac_scale_height, number_density=number_density,
                     part_size=part_size, ri=ri, P_quench=P_quench, full_output=ret_best_fit, zero_opacities=zero_opacities)
 
@@ -302,7 +332,7 @@ class CombinedRetriever:
                     custom_abundances=None,
                     scattering_factor=scatt_factor, scattering_slope=scatt_slope,
                     cloudtop_pressure=cloudtop_P,
-                    T_spot=T_spot, spot_cov_frac=spot_cov_frac, **forward_kwargs,
+                    **het_kwargs, **stellar_kwargs,
                     frac_scale_height=frac_scale_height, number_density=number_density,
                     part_size = part_size, ri=ri, P_quench=P_quench, full_output=ret_best_fit, zero_opacities=zero_opacities)
                 self._apply_offsets(calculated_eclipse_depths, params_dict, "eclipse")
@@ -396,6 +426,101 @@ class CombinedRetriever:
             retrieval_result.random_TP_profiles.append(
                 transit_info["full_TP_profile"])
         retrieval_result.pointwise_lnlikes.append(pointwise_lnlike)
+
+    @staticmethod
+    def _check_data(fit_info, transit_bins, transit_depths, transit_errors,
+                    eclipse_bins, eclipse_depths, eclipse_errors):
+        """Catch inconsistent data, offsets, visits, and priors before any
+        sampling starts."""
+        params = fit_info.all_params
+        fitted = set(fit_info.fit_param_names)
+
+        def value(name):
+            param = params.get(name)
+            return None if param is None else param.best_guess
+
+        counts = {}
+        for kind, arrays in (
+                ("transit", (transit_bins, transit_depths, transit_errors)),
+                ("eclipse", (eclipse_bins, eclipse_depths, eclipse_errors))):
+            given = [a is not None for a in arrays]
+            if any(given) and not all(given):
+                raise ValueError(
+                    "Pass all of {0}_bins, {0}_depths and {0}_errors, or none "
+                    "of them".format(kind))
+            if not any(given):
+                counts[kind] = 0
+                continue
+            lengths = {len(arrays[0]), len(arrays[1]), len(arrays[2])}
+            if len(lengths) != 1:
+                raise ValueError(
+                    "{0}_bins, {0}_depths and {0}_errors have different lengths "
+                    "({1}, {2}, {3})".format(kind, *map(len, arrays)))
+            counts[kind] = len(arrays[1])
+
+        groups = [("transit_offsets", counts["transit"]),
+                  ("eclipse_offsets", counts["eclipse"]),
+                  ("transit_visits", counts["transit"])]
+        for key, n_points in groups:
+            for name, (start, end) in (value(key) or {}).items():
+                if n_points == 0:
+                    raise ValueError("{} has {}, but there are no {} depths".format(
+                        key, name, key.split("_")[0]))
+                if end > n_points:
+                    raise ValueError(
+                        "{} {} covers rows {}-{}, but there are only {} {} "
+                        "depths".format(key, name, start, end, n_points,
+                                        key.split("_")[0]))
+
+        # Offsets and error_excess are in units of depth, not ppm
+        for name in fitted & (CombinedRetriever._offset_names(fit_info) |
+                              {"error_excess"}):
+            param = params[name]
+            scale = max(abs(param.low_lim), abs(param.high_lim)) \
+                if isinstance(param, _UniformParam) else param.std
+            if scale >= 0.1:
+                raise ValueError(
+                    "The prior on {} reaches {:g}, but offsets and error_excess "
+                    "are in units of depth, not ppm (100 ppm = 1e-4)".format(
+                        name, scale))
+        for key, n_points in groups[:2]:
+            offsets = value(key) or {}
+            free = [r for name, r in offsets.items() if name in fitted and
+                    isinstance(params[name], _UniformParam)]
+            covered = sum(end - start for start, end in free)
+            if free and covered == n_points and "Rp" in fitted:
+                warnings.warn(
+                    "Every {} depth has a freely fitted offset, which is "
+                    "degenerate with Rp; leave one dataset without an offset "
+                    "or give the offsets Gaussian priors".format(
+                        key.split("_")[0]), UserWarning, stacklevel=3)
+
+        visits = value("transit_visits") or {}
+        visit_rows = sum(end - start for start, end in visits.values())
+        for name in HET_PARAMS:
+            per_visit = [v for v in visits if "{}.{}".format(v, name) in fitted]
+            if name in fitted and per_visit and len(per_visit) == len(visits) \
+               and visit_rows == counts["transit"]:
+                raise ValueError(
+                    "{0} is fitted, but every visit fits its own <visit>.{0}, "
+                    "so {0} has no effect".format(name))
+        for T_name, f_name in (("T_het", "f_het"), ("T_het2", "f_het2")):
+            T_set = value(T_name) is not None or T_name in fitted
+            for owner in [None] + list(visits):
+                prefix = "" if owner is None else owner + "."
+                if prefix + f_name not in fitted:
+                    continue
+                visit_Ts = [v for v in visits
+                            if "{}.{}".format(v, T_name) in fitted or
+                            value("{}.{}".format(v, T_name)) is not None]
+                if owner is None and visits and len(visit_Ts) == len(visits):
+                    continue
+                if not (T_set or prefix + T_name in fitted or
+                        value(prefix + T_name) is not None):
+                    raise ValueError(
+                        "{0}{1} is fitted, but {2} is not set, so the "
+                        "heterogeneity has the photosphere's temperature and "
+                        "no effect; set {2} or fit it".format(prefix, f_name, T_name))
 
     def _make_calculators(self, fit_info, transit_bins, eclipse_bins,
                           include_condensation, rad_method):
@@ -534,6 +659,9 @@ class CombinedRetriever:
         '''
         self.params_to_lnlike = {}
         initial_positions = fit_info._generate_rand_param_arrays(nwalkers)
+        self._check_data(fit_info, transit_bins, transit_depths,
+                         transit_errors, eclipse_bins, eclipse_depths,
+                         eclipse_errors)
         transit_calc, eclipse_calc = self._make_calculators(
             fit_info, transit_bins, eclipse_bins,
             include_condensation, rad_method)
@@ -659,6 +787,9 @@ class CombinedRetriever:
         result : RetrievalResult object
         '''        
         self.params_to_lnlike = {}
+        self._check_data(fit_info, transit_bins, transit_depths,
+                         transit_errors, eclipse_bins, eclipse_depths,
+                         eclipse_errors)
         transit_calc, eclipse_calc = self._make_calculators(
             fit_info, transit_bins, eclipse_bins,
             include_condensation, rad_method)
@@ -725,6 +856,9 @@ class CombinedRetriever:
         import pymultinest
         
         self.params_to_lnlike = {}
+        self._check_data(fit_info, transit_bins, transit_depths,
+                         transit_errors, eclipse_bins, eclipse_depths,
+                         eclipse_errors)
         transit_calc, eclipse_calc = self._make_calculators(
             fit_info, transit_bins, eclipse_bins,
             include_condensation, rad_method)
@@ -806,6 +940,9 @@ class CombinedRetriever:
                 'or pip install nautilus-sampler.') from error
 
         self.params_to_lnlike = {}
+        self._check_data(fit_info, transit_bins, transit_depths,
+                         transit_errors, eclipse_bins, eclipse_depths,
+                         eclipse_errors)
         transit_calc, eclipse_calc = self._make_calculators(
             fit_info, transit_bins, eclipse_bins,
             include_condensation, rad_method)
@@ -876,7 +1013,7 @@ class CombinedRetriever:
                              log_cloudtop_P=np.inf, cloud_fraction=1,
                              log_scatt_factor=0,
                              scatt_slope=4, error_excess=0, T_star=None,
-                             T_spot=None, spot_cov_frac=None,
+                             T_het=None, f_het=None,
                              frac_scale_height=1,
                              log_number_density=-np.inf, log_part_size=-6,
                              n=None, log_k=-np.inf,
@@ -887,9 +1024,11 @@ class CombinedRetriever:
                              transit_profile_type = 'isothermal',
                              transit_terminator=None,
                              stellar_grid='newera', stellar_blackbody=False,
-                             stellar_grid_only=False, T_fac=None, fac_cov_frac=None,
-                             logg_phot=4.5, logg_spot=None, logg_fac=None, feh=0.,
-                             validate_T_grid=True,
+                             stellar_grid_only=False, T_het2=None, f_het2=None,
+                             logg_star=4.5, logg_het=None, logg_het2=None,
+                             feh_star=0., transit_visits=None,
+                             validate_T_grid=True, T_spot=None,
+                             spot_cov_frac=None,
                              **profile_kwargs):
         '''Get a :class:`.FitInfo` object filled with best guess values.  A few
         parameters are required, but others can be set to default values if you
@@ -911,14 +1050,29 @@ class CombinedRetriever:
         stellar_grid : str or pathlib.Path
             'newera' (default), 'phoenix', or a custom stellar-grid file, used by every
             sampler for transit and eclipse calculations.
-        logg_phot, logg_spot, logg_fac, feh : float
-            Stellar log10 gravity (cgs) and shared [Fe/H] (dex). Spots and
-            faculae inherit logg_phot; defaults are 4.5 and solar metallicity.
-            These can be given retrieval priors like other scalar parameters.
-        T_fac : float, optional
-            Facula effective temperature in K.
-        fac_cov_frac : float, optional
-            Facula area fraction; spot and facula fractions sum to at most one.
+        T_star : float, optional
+            Photosphere temperature (K).  Required for stellar contamination.
+        T_het, f_het : float, optional
+            Temperature (K) and covering fraction of an unocculted stellar
+            heterogeneity, which may be cooler or hotter than the
+            photosphere.  T_spot and spot_cov_frac are accepted as older
+            names.
+        T_het2, f_het2 : float, optional
+            A second heterogeneity; f_het + f_het2 must be at most 1.
+        logg_star, logg_het, logg_het2, feh_star : float
+            Stellar log10 gravity (cgs) and shared [Fe/H] (dex).  The
+            heterogeneities inherit logg_star; defaults are 4.5 and solar
+            metallicity.  These can be given priors like other parameters.
+        transit_visits : dict, optional
+            Visits whose stellar heterogeneity may differ, as a dict mapping
+            each visit name to the (start, end) indices of its transit data,
+            e.g. {"visit1": (0, 120), "visit2": (120, 176)} (see
+            :func:`~platon.observations.load_spectra`).  Each visit gets the
+            parameters "<visit>.T_het", "<visit>.f_het", "<visit>.T_het2" and
+            "<visit>.f_het2", which default to None, meaning "use T_het,
+            f_het, ...".  Fit whichever should vary between visits, e.g.
+            fit_info.add_uniform_fit_param("visit1.f_het", 0, 0.3); the
+            photosphere (T_star, logg_star, feh_star) is always shared.
         stellar_grid_only : bool, optional
             Reject out-of-grid stellar temperatures (default False).
             Boundary-normalized Planck wavelength tails remain enabled.
@@ -987,6 +1141,9 @@ class CombinedRetriever:
         all_variables = locals().copy()
         del all_variables["profile_kwargs"]
         all_variables.update(profile_kwargs)
+        all_variables["T_het"], all_variables["f_het"] = resolve_legacy_het(
+            T_het, f_het, all_variables.pop("T_spot"),
+            all_variables.pop("spot_cov_frac"))
         if transit_terminator is not None:
             if not isinstance(transit_terminator, TwoSectorTerminator):
                 raise TypeError(
@@ -1027,5 +1184,36 @@ class CombinedRetriever:
                         "{} offsets {} {} and {} {} overlap".format(
                             kind, name1, tuple(range1), name2, tuple(range2)))
         
+        for visit, index_range in (transit_visits or {}).items():
+            if not isinstance(visit, str) or not visit or "." in visit \
+               or visit != visit.strip():
+                raise ValueError(
+                    "Visit name {!r} must be a nonempty string without dots "
+                    "or surrounding spaces".format(visit))
+            if len(index_range) != 2 or \
+               not 0 <= index_range[0] < index_range[1]:
+                raise ValueError(
+                    "Range for visit {} must be (start, end) with "
+                    "0 <= start < end".format(visit))
+            for name in HET_PARAMS:
+                if "{}.{}".format(visit, name) in all_variables:
+                    raise ValueError(
+                        "Visit name {} conflicts with existing parameter "
+                        "{}.{}".format(visit, visit, name))
+                all_variables["{}.{}".format(visit, name)] = None
+        if transit_visits:
+            sorted_ranges = sorted(transit_visits.items(),
+                                   key=lambda kv: kv[1][0])
+            for (name1, range1), (name2, range2) in zip(
+                    sorted_ranges, sorted_ranges[1:]):
+                if range1[1] > range2[0]:
+                    raise ValueError(
+                        "Visits {} {} and {} {} overlap".format(
+                            name1, tuple(range1), name2, tuple(range2)))
+            if T_star is None:
+                raise ValueError(
+                    "transit_visits describes stellar heterogeneities, so "
+                    "T_star must be set")
+
         fit_info = FitInfo(all_variables)
         return fit_info

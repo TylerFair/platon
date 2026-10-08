@@ -12,8 +12,8 @@ def pytest_configure(config):
 
 
 def pytest_collection_modifyitems(items):
-    data = Path(__file__).resolve().parents[1] / 'platon/data'
-    if data.is_dir():
+    from platon._get_data import has_opacity_data
+    if has_opacity_data(Path(__file__).resolve().parents[1] / 'platon/data'):
         return
     full_data_modules = {
         'test_mie_absorption.py', 'test_transit_depth_calculator.py',
@@ -44,7 +44,7 @@ def offline_downloads(monkeypatch):
 
 @pytest.fixture(scope='session')
 def real_stellar_grid():
-    path = Path(__file__).resolve().parents[1] / 'platon/stellar_data/newera_jwst.npz'
+    path = Path(__file__).resolve().parents[1] / 'platon/data/stellar_data/newera_jwst.npz'
     required = [path] + [path.with_name(f'newera_jwst_feh_{i:02d}.npz') for i in range(10)]
     if not all(file.is_file() for file in required):
         pytest.fail('Install the NewEra release bundle before running these offline tests')

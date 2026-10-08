@@ -9,5 +9,4 @@ platon/data/
 platon/md5sum
 .DS_Store
 tls_tutorial_output/
-platon/stellar_data/
 platon/.platon-download-*/
