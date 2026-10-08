@@ -1,1 +1,5 @@
 recursive-include platon/data *
+# The NewEra grid is downloaded into data/stellar_data on first use and is
+# never packaged, nor are unfinished downloads
+prune platon/data/stellar_data
+global-exclude .platon-download-*
