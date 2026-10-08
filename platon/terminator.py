@@ -215,8 +215,8 @@ def label_by_temperature(fit_info, samples):
     Returns (names, array); a fit without a terminator is returned as is.
     Labelled columns are given for every sector parameter that is fitted, or
     fixed at different values in the two sectors, and for cold_fraction,
-    except those that never vary (e.g. a fixed value that always stays in
-    the same sector, or a fraction of 0.5).
+    except those that never vary across several samples (e.g. a fixed value
+    that always stays in the same sector, or a fraction of 0.5).
     """
     samples = np.atleast_2d(np.asarray(samples, dtype=np.float64))
     names = list(fit_info.fit_param_names)
@@ -260,7 +260,7 @@ def label_by_temperature(fit_info, samples):
             continue
         if name in labelled:
             values = labelled[name]
-            if np.ptp(values) == 0:
+            if len(samples) > 1 and np.ptp(values) == 0:
                 continue
         else:
             values = samples[:, names.index(name)]

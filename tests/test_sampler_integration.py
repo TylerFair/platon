@@ -12,13 +12,16 @@ import pytest
 from platon.combined_retriever import CombinedRetriever
 
 
-def _sampler_stubs(fit_info):
-    """Evaluate three fixed trial points through each backend's callback API."""
-    target = [0.6 if name == "offset_nirspec" else 0.3
-              for name in fit_info.fit_param_names]
-    alternative = [0.7 if name == "offset_nirspec" else 0.4
-                   for name in fit_info.fit_param_names]
-    cubes = np.array([[0.5] * len(target), target, alternative])
+def _sampler_stubs(fit_info, cubes=None):
+    """Evaluate three fixed trial points (unit cubes) through each backend's
+    callback API."""
+    if cubes is None:
+        target = [0.6 if name == "offset_nirspec" else 0.3
+                  for name in fit_info.fit_param_names]
+        alternative = [0.7 if name == "offset_nirspec" else 0.4
+                       for name in fit_info.fit_param_names]
+        cubes = [[0.5] * len(target), target, alternative]
+    cubes = np.asarray(cubes, dtype=float)
     state = SimpleNamespace()
 
     def evaluate(prior, log_likelihood):
@@ -254,3 +257,125 @@ def test_out_of_prior_trials_do_not_invoke_forward_models():
         None, None, (), print_evaluations=False)
     assert nested_likelihood([6e-4]) == -np.inf
     calculator.compute_depths.assert_not_called()
+
+
+def _run_driver(backend, fit_info, transit_args, compute_depths, cubes):
+    """Run one real retrieval driver with stub samplers and a stub transit
+    calculator whose compute_depths(bins, profile, **kwargs) gives depths."""
+    state, emcee_stub, dynesty_stub, nautilus_stub, multinest_stub = \
+        _sampler_stubs(fit_info, cubes)
+    calls = []
+
+    class Calculator:
+        def __init__(self, **options):
+            pass
+
+        def change_wavelength_bins(self, bins):
+            self.bins = bins
+
+        def _validate_params(self, *args, **kwargs):
+            pass
+
+        def compute_depths(self, profile, *args, **kwargs):
+            calls.append(dict(kwargs, profile=profile))
+            depths = compute_depths(self.bins, profile, **kwargs)
+            return self.bins.mean(axis=1), depths, {
+                "unbinned_depths": depths.copy(),
+                "unbinned_correction_factors": np.ones(len(depths))}
+
+    estimates = mock.Mock()
+    with ExitStack() as stack:
+        stack.enter_context(mock.patch("platon.combined_retriever.TransitDepthCalculator",
+                                       side_effect=lambda **opts: Calculator(**opts)))
+        stack.enter_context(mock.patch("platon.combined_retriever.emcee.EnsembleSampler", emcee_stub))
+        stack.enter_context(mock.patch("platon.combined_retriever.NestedSampler", dynesty_stub))
+        stack.enter_context(mock.patch.dict(sys.modules, {
+            "nautilus": SimpleNamespace(Sampler=nautilus_stub), "pymultinest": multinest_stub}))
+        stack.enter_context(mock.patch("platon.combined_retriever.write_param_estimates_file",
+                                       estimates))
+        stack.enter_context(mock.patch("platon.combined_retriever.psisloo",
+                                       return_value=(0, np.zeros(1), np.zeros(1))))
+        stack.enter_context(mock.patch("platon.combined_retriever.dynesty.utils.resample_equal",
+                                       side_effect=lambda samples, weights: samples.copy()))
+        stack.enter_context(mock.patch("platon.combined_retriever.np.random.shuffle"))
+        result = getattr(CombinedRetriever(), "run_" + backend)(
+            *transit_args, None, None, None, fit_info, num_final_samples=3)
+    return state, result, calls, estimates
+
+
+@pytest.mark.parametrize("backend", ["emcee", "dynesty", "multinest", "nautilus"])
+def test_drivers_run_per_visit_fits_built_by_load_spectra(backend, tmp_path):
+    from platon.observations import load_spectra
+    rows = "wavelength_low,wavelength_high,depth,error\n"
+    (tmp_path / "soss.csv").write_text(rows + "1,1.1,10000,10\n1.1,1.2,10010,10\n")
+    (tmp_path / "g395h.csv").write_text(rows + "3,3.1,10200,20\n3.1,3.2,10190,20\n3.2,3.3,10210,20\n")
+    data = load_spectra({"NIRISS": tmp_path / "soss.csv", "G395H": tmp_path / "g395h.csv"},
+                        depth_unit="ppm", visits={"soss": "NIRISS", "g395h": "G395H"})
+    fit_info = CombinedRetriever.get_default_fit_info(
+        7e8, 1.9e27, 7e7, T=1000, T_star=4000, T_het=3000, f_het=.05,
+        transit_offsets=data.offsets, transit_visits=data.visits)
+    fit_info.add_uniform_fit_param("soss.f_het", 0, .5)
+    fit_info.add_uniform_fit_param("g395h.f_het", 0, .5)
+    fit_info.add_uniform_fit_param("offset_G395H", -5e-4, 5e-4)
+
+    def depths(bins, profile, f_het, **kwargs):
+        # The stub's "contamination": 1e-3 of depth per unit coverage
+        return 0.01 + 1e-3 * np.asarray(f_het)
+
+    cubes = [[.1, .9, .5], [.6, .2, .7], [.3, .3, .1]]
+    state, result, calls, estimates = _run_driver(
+        backend, fit_info, (data.bins, data.depths, data.errors), depths, cubes)
+
+    for call in calls:
+        f_het = np.asarray(call["f_het"])
+        assert f_het.shape == (5,)
+        assert len(set(f_het[:2])) == 1 and len(set(f_het[2:])) == 1
+        assert np.all(np.asarray(call["T_het"]) == 3000)
+    expected = []
+    for soss, g395h, offset in state.samples:
+        model = 0.01 + 1e-3 * np.r_[soss, soss, g395h, g395h, g395h]
+        model[2:] += offset
+        expected.append(-0.5 * ((model - data.depths)**2 / data.errors**2 +
+                                np.log(2 * np.pi * data.errors**2)))
+    np.testing.assert_allclose(result.pointwise_lnlikes, expected)
+    assert list(estimates.call_args.args[3]) == ["soss.f_het", "g395h.f_het", "offset_G395H"]
+
+
+@pytest.mark.parametrize("backend", ["emcee", "dynesty", "multinest", "nautilus"])
+def test_drivers_label_two_sector_fits_by_temperature(backend):
+    from platon.plotter import Plotter
+    from platon.terminator import TerminatorSector, TwoSectorTerminator
+    from platon.TP_profile import Profile
+    template = TwoSectorTerminator(TerminatorSector(Profile.isothermal(900), 1e3),
+                                   TerminatorSector(Profile.isothermal(1400), 1e6))
+    fit_info = CombinedRetriever.get_default_fit_info(
+        7e8, 1.9e27, 7e7, T=None, transit_terminator=template)
+    for sector in ("sector1", "sector2"):
+        fit_info.add_uniform_fit_param(sector + ".T", 300, 3000)
+        fit_info.add_uniform_fit_param(sector + ".log_cloudtop_P", 0, 7)
+
+    def depths(bins, profile, **kwargs):
+        # Remember which sampled sector the calculator was told is cold
+        T = profile.cold.profile.profile_params["T"]
+        return np.full(len(bins), 0.01 + 1e-7 * T)
+
+    # sector1 colder, sector1 hotter (swapped), sector1 colder
+    cubes = [[.2, .1, .8, .9], [.9, .3, .1, .6], [.4, .5, .5, .2]]
+    bins = np.array([[1e-6, 1.1e-6], [2e-6, 2.1e-6]])
+    state, result, calls, estimates = _run_driver(
+        backend, fit_info, (bins, np.full(2, .0101), np.full(2, 1e-5)), depths, cubes)
+
+    for call in calls:
+        terminator = call["profile"]
+        assert isinstance(terminator, TwoSectorTerminator)
+        assert terminator.cold.profile.profile_params["T"] <= \
+            terminator.hot.profile.profile_params["T"]
+    samples, _, _, labels = estimates.call_args.args
+    assert list(labels) == ["cold.T", "hot.T", "cold.log_cloudtop_P", "hot.log_cloudtop_P"]
+    assert np.all(samples[:, 0] <= samples[:, 1])
+    # The swapped sample's cloud top moved with its temperature
+    raw = state.samples[1]
+    np.testing.assert_allclose(samples[1], [raw[2], raw[0], raw[3], raw[1]])
+    with mock.patch("platon.plotter.corner.corner") as corner:
+        Plotter.plot_retrieval_corner(result)
+    assert corner.call_args.kwargs["labels"] == list(labels)

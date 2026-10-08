@@ -210,6 +210,12 @@ class TestTwoSectorTypes(unittest.TestCase):
         fixed_hot.add_uniform_fit_param("sector1.T", 300, 800)
         names, labelled = label_by_temperature(fixed_hot, [[500.], [700.]])
         self.assertEqual(names, ["cold.T"])
+        # A single sample (e.g. the best fit) keeps every labelled column,
+        # including the template's different fixed cloud tops
+        names, labelled = label_by_temperature(fixed_hot, [[500.]])
+        self.assertEqual(names, ["cold.T", "hot.T", "cold.log_cloudtop_P",
+                                 "hot.log_cloudtop_P", "cold_fraction"])
+        np.testing.assert_allclose(labelled, [[500., 1400., 3., 6., .5]])
         # A fixed fraction other than 0.5 changes with each swap
         fixed_hot.all_params["sector1.fraction"].best_guess = .3
         fixed_hot.add_uniform_fit_param("sector2.T", 300, 3000)

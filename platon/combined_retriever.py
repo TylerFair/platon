@@ -732,12 +732,14 @@ class CombinedRetriever:
     def _write_estimates(self, fit_info, samples, best_params, best_lnprob):
         """Write BestFit.txt, with two-sector parameters labelled cold and
         hot by temperature.  Returns the divisors and labels of its columns."""
-        names, samples = label_by_temperature(fit_info, samples)
-        _, best = label_by_temperature(fit_info, [best_params])
+        # Label the best fit with the samples, so both have the same columns
+        names, labelled = label_by_temperature(
+            fit_info, np.vstack([samples, best_params]))
+        samples, best = labelled[:-1], labelled[-1]
         divisors, labels = self._get_divisors_labels(
             np.median(samples, axis=0), names)
         write_param_estimates_file(
-            samples / divisors, best[0] / divisors, best_lnprob, labels)
+            samples / divisors, best / divisors, best_lnprob, labels)
         return divisors, labels
 
     def _get_divisors_labels(self, medians, labels):
