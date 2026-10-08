@@ -97,6 +97,16 @@ def test_implausible_depth_units_suggest_the_likely_one(write, depth, unit, like
         load_spectra({"a": path}, depth_unit=unit)
 
 
+def test_depths_that_could_be_percent_need_an_explicit_unit(write):
+    path = write("p.csv", "wavelength,depth,error\n1,0.45,0.01\n1.1,0.46,0.01\n")
+    with pytest.raises(ValueError, match="could be in percent"):
+        load_spectra({"a": path})
+    np.testing.assert_allclose(load_spectra({"a": path}, depth_unit="percent").depths,
+                               [0.0045, 0.0046])
+    np.testing.assert_allclose(load_spectra({"a": path}, depth_unit="fraction").depths,
+                               [0.45, 0.46])
+
+
 @pytest.mark.parametrize("scale, unit, likely", [
     (1000, None, "nm"), (1e-6, "um", "m"), (2e4, "um", "nm' or wavelength_unit='angstrom")])
 def test_implausible_wavelength_units_suggest_the_likely_one(write, scale, unit, likely):
@@ -247,6 +257,10 @@ def test_retriever_checks_offsets_against_the_data(write):
     excess.add_uniform_fit_param("error_excess", 0, 100)
     with pytest.raises(ValueError, match="error_excess"):
         check(excess, data.depths)
+    # An open-ended prior is deliberate, as in upstream's emcee test
+    open_ended = fit_info_for(data)
+    open_ended.add_uniform_fit_param("error_excess", 0, np.inf, 0, 1e-4)
+    check(open_ended, data.depths)
 
 
 def test_retriever_warns_when_every_point_has_a_free_offset():

@@ -42,9 +42,12 @@ def test_per_bin_heterogeneities_match_separate_single_visit_calls(tiny_calculat
     _, mixed_full, info = calc.compute_depths(*args, **options, **per_visit(2),
                                               full_output=True)
     np.testing.assert_allclose(mixed_full, mixed, rtol=2e-6)
-    # Unbinned diagnostics describe the visit of the first bin
-    _, correction = calc.atm.get_stellar_spectrum(**STAR, **VISIT_A)
-    np.testing.assert_allclose(info['unbinned_correction_factors'], correction, rtol=3e-6)
+    # Unbinned diagnostics use, at each wavelength, the visit of its bin
+    _, correction_a = calc.atm.get_stellar_spectrum(**STAR, **VISIT_A)
+    _, correction_b = calc.atm.get_stellar_spectrum(**STAR, **VISIT_B)
+    in_a = info['unbinned_wavelengths'] < BINS[1, 1]
+    np.testing.assert_allclose(info['unbinned_correction_factors'],
+                               np.where(in_a, correction_a, correction_b), rtol=3e-6)
 
 
 def test_scalar_and_array_values_mix_and_constant_arrays_are_one_visit(tiny_calculator):
@@ -194,3 +197,22 @@ def test_transit_visits_require_a_photosphere():
     with pytest.raises(ValueError, match='T_star must be set'):
         CombinedRetriever.get_default_fit_info(
             R_sun, M_jup, R_jup, T=1000, transit_visits={'a': (0, 3)})
+
+
+def test_too_many_distinct_per_bin_values_are_refused(tiny_calculator):
+    from platon._forward_prep import MAX_VISITS
+    edges = np.geomspace(.9e-6, 4.5e-6, MAX_VISITS + 2)
+    tiny_calculator.change_wavelength_bins(np.column_stack([edges[:-1], edges[1:]]))
+    with pytest.raises(ValueError, match="at most {}".format(MAX_VISITS)):
+        tiny_calculator.compute_depths(tiny_profile(), *ARGS, **STAR, T_het=3500.,
+                                       f_het=np.linspace(0, .2, MAX_VISITS + 1))
+
+
+def test_per_visit_fit_survives_validation_and_walker_setup(tiny_calculator):
+    tiny_calculator.change_wavelength_bins(BINS)
+    fit_info = visit_fit_info()
+    fit_info.add_uniform_fit_param('soss.f_het', 0, .3)
+    assert fit_info.all_params['soss.f_het'].best_guess == pytest.approx(.15)
+    CombinedRetriever()._validate_params(fit_info, tiny_calculator)
+    walkers = fit_info._generate_rand_param_arrays(4)
+    assert np.all(np.isfinite(walkers)) and walkers[0, 0] == pytest.approx(.15)

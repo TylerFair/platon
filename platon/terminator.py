@@ -2,7 +2,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .TP_profile import Profile
+from .TP_profile import Profile, _radiative_solution_T4
 
 # Guillot profile parameters that the cold and hot sectors must share
 GUILLOT_SHARED_PARAMS = ("T_star", "Rs", "a", "Mp", "Rp", "log_k_th", "T_int")
@@ -37,17 +37,23 @@ SECTOR_FRACTION = "sector1.fraction"
 COMPARISON_PRESSURES = (1e1, 1e5)
 
 
-def sector_temperature(profile):
-    """Mean temperature (K) of a profile between 0.1 mbar and 1 bar.  The
-    default pressure grid is log-spaced, so this is a mean in log pressure."""
-    pressures = np.asarray(profile.pressures)
-    temperatures = np.asarray(profile.temperatures)
+def _band_mean(pressures, temperatures):
+    """Mean of temperatures (..., N) over the layers between 0.1 mbar and
+    1 bar, or their value at the band's centre if no layer is inside it."""
     low, high = COMPARISON_PRESSURES
     probed = (pressures >= low) & (pressures <= high)
     if not np.any(probed):
-        return float(np.interp(np.log(np.sqrt(low * high)), np.log(pressures),
-                               temperatures))
-    return float(np.mean(temperatures[probed]))
+        centre = np.log(np.sqrt(low * high))
+        return np.apply_along_axis(
+            lambda T: np.interp(centre, np.log(pressures), T), -1, temperatures)
+    return np.mean(temperatures[..., probed], axis=-1)
+
+
+def sector_temperature(profile):
+    """Mean temperature (K) of a profile between 0.1 mbar and 1 bar.  The
+    default pressure grid is log-spaced, so this is a mean in log pressure."""
+    return float(_band_mean(np.asarray(profile.pressures),
+                            np.asarray(profile.temperatures)))
 
 
 @dataclass(frozen=True)
@@ -153,6 +159,24 @@ class TwoSectorTerminator:
         return sector_temperature(sectors[0].profile) > \
             sector_temperature(sectors[1].profile)
 
+    def _sector1_is_hotter_columns(self, column):
+        """For many samples at once: column(name) gives a parameter's value
+        in every sample.  Isothermal sectors compare T directly; Guillot
+        profiles are computed for all samples together."""
+        if self.profile_type == "isothermal":
+            return column("sector1.T") > column("sector2.T")
+        pressures = np.asarray(self.cold.profile.pressures)
+        shared = {name: column(name)[:, None] for name in GUILLOT_SHARED_PARAMS}
+        means = []
+        for label in SECTOR_LABELS:
+            T4 = _radiative_solution_T4(
+                shared["T_star"], shared["Rs"], shared["a"], shared["Mp"],
+                shared["Rp"], column(label + ".beta")[:, None],
+                shared["log_k_th"], column(label + ".log_gamma")[:, None],
+                None, 0, shared["T_int"], pressures)
+            means.append(_band_mean(pressures, T4**0.25))
+        return means[0] > means[1]
+
     def from_params(self, params):
         """Build a terminator from a retrieval parameter dictionary, with
         whichever of sector1 and sector2 is colder as the cold sector."""
@@ -189,8 +213,10 @@ def label_by_temperature(fit_info, samples):
     J. R. Stat. Soc. B 62, 795).
 
     Returns (names, array); a fit without a terminator is returned as is.
-    If only one sector of a parameter is fitted, both labelled versions are
-    included, since the fixed value can belong to either.
+    Labelled columns are given for every sector parameter that is fitted, or
+    fixed at different values in the two sectors, and for cold_fraction,
+    except those that never vary (e.g. a fixed value that always stays in
+    the same sector, or a fraction of 0.5).
     """
     samples = np.atleast_2d(np.asarray(samples, dtype=np.float64))
     names = list(fit_info.fit_param_names)
@@ -199,21 +225,45 @@ def label_by_temperature(fit_info, samples):
     if terminator is None:
         return names, samples
 
-    per_sector = {"{}.{}".format(label, name): name for label in SECTOR_LABELS
-                  for name in terminator.sector_parameters}
-    labelled = []
+    def column(name):
+        """`name` in every sample: its fitted column, or its fixed value."""
+        if name in names:
+            return samples[:, names.index(name)]
+        return np.full(len(samples), fit_info.all_params[name].best_guess,
+                       dtype=np.float64)
+
+    swap = terminator._sector1_is_hotter_columns(column)
+    labelled = {}
+    for name in terminator.sector_parameters:
+        first, second = column("sector1." + name), column("sector2." + name)
+        if "sector1." + name in names or "sector2." + name in names or \
+           not np.array_equal(first, second):
+            labelled["cold." + name] = np.where(swap, second, first)
+            labelled["hot." + name] = np.where(swap, first, second)
+    fraction = column(SECTOR_FRACTION)
+    labelled["cold_fraction"] = np.where(swap, 1 - fraction, fraction)
+
+    # Keep the sampled order, putting each labelled pair where its first
+    # sector parameter was; derived columns that never vary are dropped
+    order = []
     for name in names:
-        if name in per_sector:
-            for new in ("cold.", "hot."):
-                if new + per_sector[name] not in labelled:
-                    labelled.append(new + per_sector[name])
+        if name.split(".", 1)[0] in SECTOR_LABELS and name != SECTOR_FRACTION:
+            order += ["cold." + name.split(".", 1)[1], "hot." + name.split(".", 1)[1]]
         elif name == SECTOR_FRACTION:
-            labelled.append("cold_fraction")
+            order.append("cold_fraction")
         else:
-            labelled.append(name)
-    result = np.empty((len(samples), len(labelled)))
-    for i, row in enumerate(samples):
-        params = fit_info._interpret_param_array(row)
-        params.update(terminator.labelled_values(params))
-        result[i] = [params[name] for name in labelled]
-    return labelled, result
+            order.append(name)
+    order += list(labelled)
+    result_names, columns = [], []
+    for name in order:
+        if name in result_names:
+            continue
+        if name in labelled:
+            values = labelled[name]
+            if np.ptp(values) == 0:
+                continue
+        else:
+            values = samples[:, names.index(name)]
+        result_names.append(name)
+        columns.append(values)
+    return result_names, np.column_stack(columns)

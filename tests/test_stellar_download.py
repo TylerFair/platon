@@ -64,6 +64,18 @@ def test_first_load_downloads_verified_shards_once(bundle, capsys):
     assert not list(package.rglob('.platon-download-*'))
 
 
+def test_grid_in_the_old_location_is_moved_not_downloaded(bundle, capsys):
+    package, archive = bundle
+    legacy = package / 'stellar_data'
+    with zipfile.ZipFile(archive) as source:
+        source.extractall(package)
+    archive.unlink()  # moving must not need the download source
+    path = download_stellar_grid()
+    assert path == package / 'data/stellar_data/newera_jwst.npz' and path.is_file()
+    assert not legacy.exists()
+    assert 'Moved the NewEra stellar spectra' in capsys.readouterr().out
+
+
 def test_first_tls_call_installs_bundle(tiny_calculator, bundle, monkeypatch):
     from platon import _atmosphere_solver as solver
     from platon.constants import R_sun, M_jup, R_jup

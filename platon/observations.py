@@ -456,8 +456,15 @@ def _load_dataset(name, spec):
                          "columns={{'depth': ...}}".format(name, ", ".join(table.colnames)))
     if depth_column is not None:
         values = _column(table, depth_column)
+        stated = spec["depth_unit"] or _table_unit(table, depth_column)
         unit = _resolve_unit(name, "depth", spec["depth_unit"],
                              _table_unit(table, depth_column), "fraction")
+        median = np.nanmedian(np.abs(values))
+        if stated is None and 0.1 < median <= 1:
+            raise ValueError(
+                "{}: a median depth of {:g} could be in percent or a very deep "
+                "transit as a fraction; pass depth_unit='percent' or "
+                "depth_unit='fraction'".format(name, median))
     else:
         values = _column(table, ratio)
         if spec["depth_unit"] not in (None, "rprs"):

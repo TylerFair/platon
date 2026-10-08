@@ -151,6 +151,14 @@ def download_stellar_grid(force=False):
         names = ('newera_jwst.npz',) + tuple(f'newera_jwst_feh_{i:02d}.npz' for i in range(10))
         if not force and all((path.parent / name).is_file() for name in names):
             return path
+        # Earlier versions kept the grid in platon/stellar_data
+        legacy = path.parent.parent.parent / 'stellar_data'
+        if not force and not path.parent.exists() and \
+                all((legacy / name).is_file() for name in names):
+            path.parent.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(legacy, path.parent)
+            print(f'Moved the NewEra stellar spectra from {legacy} to {path.parent}')
+            return path
         print(f'Downloading NewEra stellar spectra (one time only) from {__stellar_grid_url__}')
         try:
             _download_and_install(__stellar_grid_url__, path.parent.parent,

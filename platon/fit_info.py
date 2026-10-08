@@ -44,7 +44,8 @@ class FitInfo:
         and `high_lim`.  If using emcee, the walkers' initial values for this
         parameter are randomly selected to be between `low_guess` and
         `high_guess`.  If not specified, `low_guess` is set to `low_lim`, and
-        similarly with `high_guess`.'''
+        similarly with `high_guess`.  A parameter without a value (None)
+        starts at the centre of the prior.'''
 
         name = self._known_name(name)
         if name in self.fit_param_names:
@@ -55,6 +56,9 @@ class FitInfo:
         if high_guess is None:
             high_guess = high_lim
         best_guess = self.all_params[name].best_guess
+        if best_guess is None:
+            # e.g. a per-visit parameter that otherwise inherits a shared one
+            best_guess = 0.5 * (low_lim + high_lim)
 
         param = _UniformParam(best_guess, low_lim, high_lim, low_guess, high_guess)
         self.fit_param_names.append(name)

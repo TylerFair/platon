@@ -17,10 +17,12 @@ STELLAR_FOLDER = "stellar_data"
 
 
 def has_opacity_data(data_dir):
-    """Whether data_dir holds the opacity archive, not just stellar grids."""
+    """Whether data_dir holds the opacity archive, not just stellar grids or
+    the hidden staging folder of an unfinished download."""
     data_dir = Path(data_dir)
     return data_dir.is_dir() and any(
-        path.name != STELLAR_FOLDER for path in data_dir.iterdir())
+        path.name != STELLAR_FOLDER and not path.name.startswith(".")
+        for path in data_dir.iterdir())
 
 
 def get_data_if_needed():
@@ -32,7 +34,9 @@ def get_data_if_needed():
     if __md5sum__ != curr_md5sum:
         print("Warning: data files are out of date. To update, remove the PLATON "
               "data directory ({}) and PLATON will automatically download the "
-              "latest data files on the next run.".format(basedir / "data"))
+              "latest data files on the next run.  Its stellar_data folder "
+              "can be kept (move it back in afterwards) to avoid downloading "
+              "the stellar spectra again.".format(basedir / "data"))
 
 
 def _validate_archive_members(archive, folder="data"):

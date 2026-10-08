@@ -253,3 +253,11 @@ def test_opacity_reinstall_keeps_downloaded_stellar_grid(tmp_path, monkeypatch):
     assert not (tmp_path / "data" / "old.npy").exists()
     assert (tmp_path / "data" / "stellar_data" / "newera_jwst.npz").read_bytes() == b"grid"
     assert_no_partial_downloads(tmp_path)
+
+
+def test_unfinished_downloads_do_not_count_as_opacity_data(tmp_path):
+    (tmp_path / "data" / ".platon-download-abc").mkdir(parents=True)
+    (tmp_path / "data" / "stellar_data").mkdir()
+    assert not downloader.has_opacity_data(tmp_path / "data")
+    (tmp_path / "data" / "pressures.npy").write_bytes(b"installed")
+    assert downloader.has_opacity_data(tmp_path / "data")

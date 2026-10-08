@@ -203,6 +203,19 @@ class TestTwoSectorTypes(unittest.TestCase):
                                  "hot.log_cloudtop_P", "cold_fraction", "Rp"])
         np.testing.assert_allclose(labelled, [[800., 2000., 2., 6., .2, R_jup],
                                               [1000., 2500., 6., 4., .1, R_jup]])
+        # Labelled values that never vary are left out, e.g. a fixed hot
+        # temperature that is always the hotter one, and a 0.5 fraction
+        fixed_hot = CombinedRetriever.get_default_fit_info(
+            R_sun, M_jup, R_jup, T=None, transit_terminator=model)
+        fixed_hot.add_uniform_fit_param("sector1.T", 300, 800)
+        names, labelled = label_by_temperature(fixed_hot, [[500.], [700.]])
+        self.assertEqual(names, ["cold.T"])
+        # A fixed fraction other than 0.5 changes with each swap
+        fixed_hot.all_params["sector1.fraction"].best_guess = .3
+        fixed_hot.add_uniform_fit_param("sector2.T", 300, 3000)
+        names, labelled = label_by_temperature(fixed_hot, [[500., 900.], [700., 400.]])
+        self.assertIn("cold_fraction", names)
+        np.testing.assert_allclose(labelled[:, names.index("cold_fraction")], [.3, .7])
         # Fits without a terminator are unchanged
         plain = CombinedRetriever.get_default_fit_info(R_sun, M_jup, R_jup, T=1000)
         plain.add_uniform_fit_param("T", 300, 3000)
@@ -366,6 +379,29 @@ class TestTwoSectorForwardModel(unittest.TestCase):
             retriever.get_default_fit_info(
                 0.9 * self.Rs, self.Mp, self.Rp, T=None,
                 transit_terminator=model)
+
+def test_warns_when_fixed_sector_values_differ():
+    import warnings
+    import pytest
+    from platon.combined_retriever import CombinedRetriever
+    model = TwoSectorTerminator(
+        TerminatorSector(isothermal(900), 1e3),
+        TerminatorSector(isothermal(1400), 1e6))
+    fit_info = CombinedRetriever.get_default_fit_info(
+        R_sun, M_jup, R_jup, T=None, transit_terminator=model)
+    fit_info.add_uniform_fit_param("sector1.T", 300, 3000)
+    fit_info.add_uniform_fit_param("sector2.T", 300, 3000)
+    bins = np.array([[1e-6, 1.1e-6]])
+    args = (bins, np.array([.01]), np.array([1e-4]), None, None, None)
+    with pytest.warns(UserWarning, match="sector1.log_cloudtop_P and "
+                      "sector2.log_cloudtop_P are fixed"):
+        CombinedRetriever._check_data(fit_info, *args)
+    ordered = CombinedRetriever.get_default_fit_info(
+        R_sun, M_jup, R_jup, T=None, transit_terminator=model)
+    ordered.add_ordered_uniform_fit_params("sector1.T", "sector2.T", 300, 3000)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        CombinedRetriever._check_data(ordered, *args)
 
 
 if __name__ == "__main__":

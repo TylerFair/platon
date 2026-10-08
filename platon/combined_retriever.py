@@ -470,12 +470,17 @@ class CombinedRetriever:
                         "depths".format(key, name, start, end, n_points,
                                         key.split("_")[0]))
 
-        # Offsets and error_excess are in units of depth, not ppm
+        # Offsets and error_excess are in units of depth, not ppm.  Infinite
+        # uniform limits are deliberate (improper) priors, not unit mistakes.
         for name in fitted & (CombinedRetriever._offset_names(fit_info) |
                               {"error_excess"}):
             param = params[name]
-            scale = max(abs(param.low_lim), abs(param.high_lim)) \
-                if isinstance(param, _UniformParam) else param.std
+            if isinstance(param, _UniformParam):
+                limits = [abs(x) for x in (param.low_lim, param.high_lim)
+                          if np.isfinite(x)]
+                scale = max(limits, default=0)
+            else:
+                scale = param.std
             if scale >= 0.1:
                 raise ValueError(
                     "The prior on {} reaches {:g}, but offsets and error_excess "
@@ -492,6 +497,24 @@ class CombinedRetriever:
                     "degenerate with Rp; leave one dataset without an offset "
                     "or give the offsets Gaussian priors".format(
                         key.split("_")[0]), UserWarning, stacklevel=3)
+
+        terminator = value("transit_terminator")
+        ordered = set(map(tuple, getattr(fit_info, "ordered_pairs", [])))
+        if terminator is not None and not (
+                terminator.profile_type == "isothermal" and
+                ("sector1.T", "sector2.T") in ordered):
+            for name in terminator.sector_parameters:
+                one, two = "sector1." + name, "sector2." + name
+                if one not in fitted and two not in fitted and \
+                   not np.isclose(value(one), value(two)):
+                    warnings.warn(
+                        "{0} and {1} are fixed at different values ({2:g}, "
+                        "{3:g}), but the sectors are sampled unordered, so "
+                        "sector1 keeps its value whether it comes out colder "
+                        "or hotter; fit both, or fix them equal, to let {4} "
+                        "follow temperature".format(one, two, value(one),
+                                                    value(two), name),
+                        UserWarning, stacklevel=3)
 
         visits = value("transit_visits") or {}
         visit_rows = sum(end - start for start, end in visits.values())

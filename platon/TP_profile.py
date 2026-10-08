@@ -9,6 +9,33 @@ def _default_pressures():
     return np.logspace(np.log10(MIN_P), np.log10(MAX_P), NUM_LAYERS)
 
 
+def _radiative_solution_T4(T_star, Rs, a, Mp, Rp, beta, log_k_th, log_gamma,
+                           log_gamma2, alpha, T_int, pressures):
+    """T^4 of the Line et al. (2013) profile at `pressures`.  The parameters
+    may be arrays of shape (S, 1), giving (S, len(pressures)) profiles."""
+    k_th = 10.0**log_k_th
+    gamma = 10.0**log_gamma
+    gamma2 = 10.0**log_gamma2 if log_gamma2 is not None else None
+
+    g = G * Mp / Rp**2
+    T_eq = beta * np.sqrt(Rs / (2 * a)) * T_star
+    taus = k_th * pressures / g
+
+    def incoming_stream_contribution(gamma):
+        return 3.0 / 4 * T_eq**4 * \
+            (2.0 / 3 + 2.0 / 3 / gamma *
+             (1 + (gamma * taus / 2 - 1) * np.exp(-gamma * taus)) +
+             2.0 * gamma / 3 * (1 - taus**2 / 2) * expn(2, gamma * taus))
+
+    e1 = incoming_stream_contribution(gamma)
+    T4 = 3.0 / 4 * T_int**4 * (2.0 / 3 + taus) + (1 - alpha) * e1
+
+    if gamma2 is not None:
+        e2 = incoming_stream_contribution(gamma2)
+        T4 += alpha * e2
+    return T4
+
+
 class Profile:
     """A temperature/pressure profile.
 
@@ -188,26 +215,9 @@ class Profile:
                            alpha=0, T_int=100, **ignored_kwargs):
         '''From Line et al. 2013: http://adsabs.harvard.edu/abs/2013ApJ...775..137L, Equation 13 - 16.'''
 
-        k_th = 10.0**log_k_th
-        gamma = 10.0**log_gamma
-        gamma2 = 10.0**log_gamma2 if log_gamma2 is not None else None
-
-        g = G * Mp / Rp**2
-        T_eq = beta * np.sqrt(Rs / (2 * a)) * T_star
-        taus = k_th * _default_pressures() / g
-
-        def incoming_stream_contribution(gamma):
-            return 3.0 / 4 * T_eq**4 * \
-                (2.0 / 3 + 2.0 / 3 / gamma *
-                 (1 + (gamma * taus / 2 - 1) * np.exp(-gamma * taus)) +
-                 2.0 * gamma / 3 * (1 - taus**2 / 2) * expn(2, gamma * taus))
-
-        e1 = incoming_stream_contribution(gamma)
-        T4 = 3.0 / 4 * T_int**4 * (2.0 / 3 + taus) + (1 - alpha) * e1
-
-        if gamma2 is not None:
-            e2 = incoming_stream_contribution(gamma2)
-            T4 += alpha * e2
+        T4 = _radiative_solution_T4(T_star, Rs, a, Mp, Rp, beta, log_k_th,
+                                    log_gamma, log_gamma2, alpha, T_int,
+                                    _default_pressures())
         return cls._parameterized(T4 ** 0.25, "radiative_solution", dict(
             T_star=T_star, Rs=Rs, a=a, Mp=Mp, Rp=Rp, beta=beta,
             log_k_th=log_k_th, log_gamma=log_gamma,

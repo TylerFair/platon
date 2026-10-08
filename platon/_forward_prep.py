@@ -18,6 +18,10 @@ def _pack_scalars(**kwargs):
     return scalars
 
 
+# Each visit unrolls one more stellar spectrum and binning into the JIT core
+MAX_VISITS = 20
+
+
 def _visit_heterogeneities(atm, T_star, T_het, f_het, T_het2, f_het2,
                            per_bin_het):
     """Group wavelength bins by heterogeneity settings.
@@ -64,6 +68,12 @@ def _visit_heterogeneities(atm, T_star, T_het, f_het, T_het2, f_het2,
     visit_rows = [tuple(float(x) for x in unique[i]) for i in order]
     if len(visit_rows) == 1:
         return visit_rows, None
+    if len(visit_rows) > MAX_VISITS:
+        raise ValueError(
+            "T_het, f_het, T_het2 and f_het2 take {} different combinations "
+            "of values across the bins; per-bin heterogeneities are meant "
+            "for a few visits (at most {}), each of which adds to the "
+            "compiled model".format(len(visit_rows), MAX_VISITS))
     return visit_rows, rank[inverse.ravel()].astype(np.int32)
 
 

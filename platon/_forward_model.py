@@ -546,17 +546,25 @@ def _stellar_spectrum(cfg, data, sc, inp, visit=0, orig=False):
 def _contaminated_depths(cfg, data, sc, inp, depths):
     """TLS-corrected transit depths, binned when bins are set.  With several
     visits, each bin takes the correction for the visit it was observed in;
-    the atmosphere itself is computed only once.  Also returns the first
-    visit's stellar spectrum and correction factor."""
+    the atmosphere itself is computed only once.  Also returns the stellar
+    spectrum and correction factor at each wavelength, taken from the visit
+    of the bin containing it (the highest-numbered one where bins of
+    different visits overlap)."""
     stellar, corr = _stellar_spectrum(cfg, data, sc, inp)
     if data.bin_idx is None:
         return depths * corr, stellar, corr
     binned = _bin_average(depths * corr, stellar, data)
+    if cfg.n_visits > 1:
+        point_visit = jnp.zeros(stellar.shape[0], dtype=jnp.int32).at[
+            data.bin_idx].max(jnp.where(data.bin_w > 0,
+                                        inp.bin_visit[:, None], 0))
     for visit in range(1, cfg.n_visits):
         stellar_v, corr_v = _stellar_spectrum(cfg, data, sc, inp, visit)
         binned = jnp.where(inp.bin_visit == visit,
                            _bin_average(depths * corr_v, stellar_v, data),
                            binned)
+        stellar = jnp.where(point_visit == visit, stellar_v, stellar)
+        corr = jnp.where(point_visit == visit, corr_v, corr)
     return binned, stellar, corr
 
 
