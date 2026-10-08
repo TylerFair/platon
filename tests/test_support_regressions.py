@@ -218,3 +218,20 @@ def test_pointwise_likelihood_cache_is_bounded_and_evicted_posterior_is_recomput
     np.testing.assert_allclose(result.loos, expected)
     assert len(retriever.params_to_lnlike) == limit
     assert tuple(trials[0]) in retriever.params_to_lnlike
+
+
+@pytest.mark.parametrize('Mp, unbound', [(5.97e20, True), (7.49e26, False)])
+def test_unbound_atmosphere_check_survives_jit(Mp, unbound):
+    # Under jit XLA could regroup k_B and AMU into an FP32-underflowing
+    # product, which silently disabled the check
+    import jax
+    import jax.numpy as jnp
+    from platon import _forward_model as fm
+    from platon._forward_prep import _pack_scalars
+    P = np.geomspace(1e-4, 1e8, 100)
+    sc = jnp.asarray(_pack_scalars(rs=6.97e8, mp=Mp, rp=6.378e6, ref_pressure=1e5,
+                                   t_star_hydro=6100.), jnp.float32)
+    args = (sc, jnp.asarray(P, jnp.float32), jnp.full(100, 300., jnp.float32),
+            jnp.full(100, 2.3, jnp.float32))
+    assert bool(fm._hydrostatic(*args)[2]) is unbound
+    assert bool(jax.jit(fm._hydrostatic)(*args)[2]) is unbound

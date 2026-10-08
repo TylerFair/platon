@@ -38,6 +38,9 @@ LOG_MIN_ABUND = -99.0
 LN_MIN_XSEC = math.log(1e-99)   # floor of the stored log cross sections
 TWO_H_C_SQR = 2 * h * c ** 2
 HC_OVER_KB = h * c / k_B
+# k_B / AMU, folded on the host: under jit XLA may regroup k_B and AMU into
+# their product (~2e-50), which underflows FP32 to zero
+K_B_OVER_AMU = k_B / AMU
 
 # Indices into the packed scalar-parameter vector
 (SC_RS, SC_MP, SC_RP, SC_LOGZ, SC_CO, SC_LOG_CH4, SC_SCAT_FACTOR,
@@ -279,7 +282,7 @@ def _hydrostatic(sc, P_profile, T_profile, mu_profile):
 
     T_mid = 0.5 * (T_profile[1:] + T_profile[:-1])
     mu_mid = 0.5 * (mu_profile[1:] + mu_profile[:-1])
-    seg = jnp.diff(ln_P) * k_B * T_mid / (G * Mp * mu_mid * AMU)   # (N-1,)
+    seg = jnp.diff(ln_P) * K_B_OVER_AMU * T_mid / (G * Mp * mu_mid)  # (N-1,)
     C = jnp.concatenate([jnp.zeros(1, dtype=seg.dtype), jnp.cumsum(seg)])
 
     # Integral value at the reference pressure (piecewise-linear T, mu in lnP)
@@ -287,8 +290,8 @@ def _hydrostatic(sc, P_profile, T_profile, mu_profile):
     k, f = fractional_index(ln_ref, ln_P)
     T_ref = T_profile[k] + f * (T_profile[k + 1] - T_profile[k])
     mu_ref = mu_profile[k] + f * (mu_profile[k + 1] - mu_profile[k])
-    seg_partial = (ln_ref - ln_P[k]) * k_B * 0.5 * (T_profile[k] + T_ref) / \
-        (G * Mp * 0.5 * (mu_profile[k] + mu_ref) * AMU)
+    seg_partial = (ln_ref - ln_P[k]) * K_B_OVER_AMU * \
+        0.5 * (T_profile[k] + T_ref) / (G * Mp * 0.5 * (mu_profile[k] + mu_ref))
     C_ref = C[k] + seg_partial
 
     inv_r = 1.0 / Rp + (C - C_ref)
@@ -299,10 +302,12 @@ def _hydrostatic(sc, P_profile, T_profile, mu_profile):
     # Unbound-atmosphere diagnostics (same criteria as the FP64 version)
     R_hill = Rs * (sc[SC_T_STAR_HYDRO] / T_profile[0]) ** 2 * \
         (Mp / (3 * M_sun)) ** (1.0 / 3)
-    max_r_estimate = 1.0 / (1.0 / Rp + k_B * jnp.median(T_profile) *
-                            jnp.log(P_profile[0] / sc[SC_REF_PRESSURE]) /
-                            (G * Mp * jnp.mean(mu_profile) * AMU))
-    unbound = (max_r_estimate < 0) | (max_r_estimate > R_hill)
+    # Same criteria as max_r < 0 or max_r > R_hill for the estimated top
+    # radius max_r = 1 / inv_max_r, without dividing by inv_max_r
+    inv_max_r = 1.0 / Rp + K_B_OVER_AMU * jnp.median(T_profile) * \
+        jnp.log(P_profile[0] / sc[SC_REF_PRESSURE]) / \
+        (G * Mp * jnp.mean(mu_profile))
+    unbound = (inv_max_r <= 0) | (inv_max_r * R_hill < 1)
     return radii, dr, unbound
 
 
