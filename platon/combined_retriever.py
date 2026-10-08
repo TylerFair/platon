@@ -3,13 +3,11 @@ import emcee
 from dynesty import NestedSampler
 import dynesty.utils
 import copy
-import sys
 
 from .psis import psisloo
 from .transit_depth_calculator import TransitDepthCalculator
 from .eclipse_depth_calculator import EclipseDepthCalculator
 from .fit_info import FitInfo
-from ._offsets import apply_offsets, offset_parameter_names, offset_labels
 
 from .constants import METRES_TO_UM, M_jup, R_jup, R_earth, M_earth, R_sun
 from ._params import _UniformParam
@@ -27,32 +25,32 @@ class CombinedRetriever:
         if not hasattr(self, "last_lnprob"):
             return
         
-        offsets = offset_parameter_names(fit_info)
         line = "ln_prob={:.2e}\t".format(self.last_lnprob)
         for i, name in enumerate(fit_info.fit_param_names):            
             value = self.last_params[i]
-            unit = "ppm" if name in offsets else ""
-            is_temperature = name not in offsets and (
-                name == "T" or name.endswith(".T") or name.endswith(".T_irr"))
-            if name not in offsets:
-                if name == "Rs":
-                    value /= R_sun
-                    unit = "R_sun"
-                elif name == "Mp":
-                    value /= M_jup
-                    unit = "M_jup"
-                elif name == "Rp":
-                    value /= R_jup
-                    unit = "R_jup"
-                elif is_temperature:
-                    unit = "K"
-            if is_temperature:
-                format_str = "{:4.0f}"
-            elif abs(value) < 1e4:
-                format_str = "{:.2f}"
-            else:
-                format_str = "{:.2e}"
+            unit = ""
+            if name == "Rs":
+                value /= R_sun
+                unit = "R_sun"
+            if name == "Mp":
+                value /= M_jup
+                unit = "M_jup"
+            if name == "Rp":
+                value /= R_jup
+                unit = "R_jup"
+            if name == "T" or name.endswith(".T"):
+                unit = "K"
 
+            if name == "T" or name.endswith(".T"):
+                format_str = "{:4.0f}"                
+            elif abs(value) < 1e4: format_str = "{:.2f}"
+            else: format_str = "{:.2e}"
+
+            if name == "error_excess" or \
+               name in self._offset_names(fit_info):
+                unit = "ppm"
+                value *= 1e6
+            
             format_str = "{}=" + format_str + " " + unit + "\t"
             line += format_str.format(name, value)
             
@@ -117,7 +115,7 @@ class CombinedRetriever:
             best = [fit_info.all_params[name].best_guess
                     for name in fit_info.fit_param_names]
             params = fit_info._interpret_param_array(best)
-            rebuilt = terminator.from_params(params, params["Mp"], params["Rp"])
+            rebuilt = terminator.from_params(params)
             for sector in (rebuilt.cold, rebuilt.hot):
                 calculator._validate_params(
                     sector.profile.temperatures, params["logZ"],
@@ -143,6 +141,26 @@ class CombinedRetriever:
                         calculator._validate_params(
                             sector.profile.temperatures, logZ, ratio, cloudtop,
                             validate_T_grid=validate_T_grid)
+
+    @staticmethod
+    def _offset_names(fit_info):
+        """Names of the per-instrument offset parameters in fit_info."""
+        names = set()
+        for key in ("transit_offsets", "eclipse_offsets"):
+            param = fit_info.all_params.get(key)
+            if param is not None and param.best_guess is not None:
+                names.update(param.best_guess.keys())
+        return names
+
+    @staticmethod
+    def _apply_offsets(depths, params_dict, kind):
+        """Adds each named offset in params_dict[kind + "_offsets"] (kind is
+        "transit" or "eclipse") to its index range of the calculated depths,
+        in place."""
+        offsets = params_dict.get(kind + "_offsets")
+        if offsets is not None:
+            for name, (start, end) in offsets.items():
+                depths[start:end] += params_dict[name]
 
     @staticmethod
     def convert_clr_to_vmr(clrs):
@@ -171,7 +189,7 @@ class CombinedRetriever:
         scatt_factor = 10.0**params_dict["log_scatt_factor"]
         scatt_slope = params_dict["scatt_slope"]
         cloudtop_P = 10.0**params_dict["log_cloudtop_P"]
-        error_multiple = params_dict["error_multiple"]
+        error_excess = params_dict["error_excess"]
         Rs = params_dict["Rs"]
         Mp = params_dict["Mp"]
         T_star = params_dict["T_star"]
@@ -220,8 +238,8 @@ class CombinedRetriever:
         else:
             ri = None
             
-        if any(not np.isfinite(value) or value <= 0
-               for value in (Rs, Mp, Rp, error_multiple)):
+        if any(not np.isfinite(value) or value <= 0 for value in (Rs, Mp, Rp)) \
+           or not np.isfinite(error_excess) or error_excess < 0:
             return -np.inf
 
         ln_likelihood = np.array([])
@@ -239,13 +257,12 @@ class CombinedRetriever:
                        params_dict.get("T_transit") is None and T is None:
                         raise ValueError(
                             "Must fit for T if using transit depths")
-                    transit_profile = Profile()
-                    transit_profile.set_from_params_dict(
+                    transit_profile = Profile.from_params_dict(
                         transit_profile_type, params_dict, suffix="_transit")
                     transit_profiles = (transit_profile,)
                 else:
                     transit_profile = transit_terminator.from_params(
-                        params_dict, Mp, Rp)
+                        params_dict)
                     transit_profiles = (
                         transit_profile.cold.profile,
                         transit_profile.hot.profile)
@@ -264,10 +281,9 @@ class CombinedRetriever:
                     frac_scale_height=frac_scale_height, number_density=number_density,
                     part_size=part_size, ri=ri, P_quench=P_quench, full_output=ret_best_fit, zero_opacities=zero_opacities)
 
-                calculated_transit_depths = apply_offsets(
-                    calculated_transit_depths, params_dict, "transit")
+                self._apply_offsets(calculated_transit_depths, params_dict, "transit")
                 residuals = calculated_transit_depths - measured_transit_depths
-                scaled_errors = error_multiple * measured_transit_errors
+                scaled_errors = np.sqrt(measured_transit_errors**2 + error_excess**2)
                 ln_likelihood = np.append(ln_likelihood, -0.5 * (residuals**2 / scaled_errors**2 + np.log(2 * np.pi * scaled_errors**2)))
                 
             if measured_eclipse_depths is not None:
@@ -275,8 +291,7 @@ class CombinedRetriever:
                     raise ValueError(
                         "Must fit for T when profile_type is isothermal")
 
-                t_p_profile = Profile()
-                t_p_profile.set_from_params_dict(
+                t_p_profile = Profile.from_params_dict(
                     params_dict["profile_type"], params_dict)
 
                 if np.any(np.isnan(t_p_profile.temperatures)):
@@ -290,10 +305,9 @@ class CombinedRetriever:
                     T_spot=T_spot, spot_cov_frac=spot_cov_frac, **forward_kwargs,
                     frac_scale_height=frac_scale_height, number_density=number_density,
                     part_size = part_size, ri=ri, P_quench=P_quench, full_output=ret_best_fit, zero_opacities=zero_opacities)
-                calculated_eclipse_depths = apply_offsets(
-                    calculated_eclipse_depths, params_dict, "eclipse")
+                self._apply_offsets(calculated_eclipse_depths, params_dict, "eclipse")
                 residuals = calculated_eclipse_depths - measured_eclipse_depths
-                scaled_errors = error_multiple * measured_eclipse_errors
+                scaled_errors = np.sqrt(measured_eclipse_errors**2 + error_excess**2)
                 ln_likelihood = np.append(ln_likelihood, -0.5 * (residuals**2 / scaled_errors**2 + np.log(2 * np.pi * scaled_errors**2)))
 
         except AtmosphereError as e:
@@ -331,17 +345,14 @@ class CombinedRetriever:
     def _profile_to_array(profile):
         """Converts a Profile to a (2, N) array [P, T], or a TwoSectorTerminator
         to a (3, N) array [P, T_cold, T_hot].  Pressures are in Pa,
-        temperatures in K. Distinct sector grids use their sorted union,
-        interpolating temperatures in log pressure and holding edge values
-        outside each sector's sampled range."""
+        temperatures in K."""
         if isinstance(profile, TwoSectorTerminator):
             cold = profile.cold.profile
             hot = profile.hot.profile
-            pressures = np.union1d(cold.pressures, hot.pressures)
             return np.array([
-                pressures,
-                np.interp(np.log(pressures), np.log(cold.pressures), cold.temperatures),
-                np.interp(np.log(pressures), np.log(hot.pressures), hot.temperatures)])
+                np.asarray(cold.pressures, dtype=np.float64),
+                np.asarray(cold.temperatures, dtype=np.float64),
+                np.asarray(hot.temperatures, dtype=np.float64)])
         return np.array([
             np.asarray(profile.pressures, dtype=np.float64),
             np.asarray(profile.temperatures, dtype=np.float64)])
@@ -542,7 +553,7 @@ class CombinedRetriever:
         
         divisors, new_labels = self._get_divisors_labels(
             np.median(sampler.flatchain, axis=0),
-            fit_info.fit_param_names, fit_info)
+            fit_info.fit_param_names)
         
         write_param_estimates_file(
             sampler.flatchain / divisors,
@@ -576,14 +587,11 @@ class CombinedRetriever:
             zero_opacities)
         return retrieval_result
 
-    def _get_divisors_labels(self, medians, labels, fit_info):
+    def _get_divisors_labels(self, medians, labels):
         divisors = np.ones(len(labels))
-        new_labels = offset_labels(labels, fit_info)
-        offsets = offset_parameter_names(fit_info)
+        new_labels = np.copy(labels)
         
-        for i, l in enumerate(labels):
-            if l in offsets:
-                continue
+        for i, l in enumerate(labels):            
             if l == "Rs":
                 divisors[i] = R_sun
                 new_labels[i] = "R_star/R_sun"
@@ -675,7 +683,7 @@ class CombinedRetriever:
 
         divisors, new_labels = self._get_divisors_labels(
             np.median(equal_samples, axis=0),
-            fit_info.fit_param_names, fit_info)
+            fit_info.fit_param_names)
         
         write_param_estimates_file(
             equal_samples / divisors,
@@ -710,8 +718,7 @@ class CombinedRetriever:
                       include_condensation=True, rad_method="xsec",
                       maxiter=None, maxcall=None, nlive=250,
                       num_final_samples=100, zero_opacities=[],
-                      multinest_kwargs={},
-                      **dynesty_kwargs):
+                      multinest_kwargs={}):
         """multinest_kwargs are forwarded to pymultinest.solve/run (e.g.
         sampling_efficiency, const_efficiency_mode, evidence_tolerance,
         multimodal, outputfiles_basename)."""
@@ -748,7 +755,7 @@ class CombinedRetriever:
         
         divisors, new_labels = self._get_divisors_labels(
             np.median(equal_samples, axis=0),
-            fit_info.fit_param_names, fit_info)
+            fit_info.fit_param_names)
         
         write_param_estimates_file(
             equal_samples / divisors,
@@ -829,7 +836,7 @@ class CombinedRetriever:
         equal_samples = dynesty.utils.resample_equal(samples, weights)
         np.random.shuffle(equal_samples)
         divisors, new_labels = self._get_divisors_labels(
-            np.median(equal_samples, axis=0), fit_info.fit_param_names, fit_info)
+            np.median(equal_samples, axis=0), fit_info.fit_param_names)
         write_param_estimates_file(
             equal_samples / divisors, best_params_arr / divisors,
             np.max(logp), new_labels)
@@ -868,19 +875,17 @@ class CombinedRetriever:
                              free_retrieval=False,
                              log_cloudtop_P=np.inf, cloud_fraction=1,
                              log_scatt_factor=0,
-                             scatt_slope=4, error_multiple=1, T_star=None,
+                             scatt_slope=4, error_excess=0, T_star=None,
                              T_spot=None, spot_cov_frac=None,
                              frac_scale_height=1,
                              log_number_density=-np.inf, log_part_size=-6,
                              n=None, log_k=-np.inf,
                              log_P_quench=-99,
-                             offset_transit=0, offset_eclipse=0, offset_start=0, offset_end=sys.maxsize,
+                             transit_offsets=None, eclipse_offsets=None,
                              fit_vmr=False, fit_clr=False,
                              profile_type = 'isothermal',
                              transit_profile_type = 'isothermal',
                              transit_terminator=None,
-                             transit_offset_windows=None,
-                             eclipse_offset_windows=None,
                              stellar_grid='newera', stellar_blackbody=False,
                              stellar_grid_only=False, T_fac=None, fac_cov_frac=None,
                              logg_phot=4.5, logg_spot=None, logg_fac=None, feh=0.,
@@ -889,7 +894,7 @@ class CombinedRetriever:
         '''Get a :class:`.FitInfo` object filled with best guess values.  A few
         parameters are required, but others can be set to default values if you
         do not want to specify them.  Physical parameters use SI, except stellar logg
-        (log10 cgs), [Fe/H] (dex), and offsets (ppm). For
+        (log10 cgs) and [Fe/H] (dex).  For
         information on the parameters not described below, see the documentation
         for :func:`~platon.transit_depth_calculator.TransitDepthCalculator.compute_depths` and :func:`~platon.eclipse_depth_calculator.EclipseDepthCalculator.compute_depths`
 
@@ -925,23 +930,30 @@ class CombinedRetriever:
         log_k : float
             log10 of the imaginary component of the refractive index of haze
             particles.  Set to -np.inf for k=0
-        offset_transit : float
-            Additive model-depth offset in ppm, applied to rows selected by
-            offset_start and offset_end (e.g. obs[offset_start:offset_end]).
-            A positive value increases model depths; 500 means 500 ppm.
-        offset_eclipse : float
-            Same as above, but for eclipse depths.
-        transit_offset_windows, eclipse_offset_windows : dict, optional
-            Map offset parameter names (e.g. offset_nirspec) to half-open
-            (start, end) index windows, or a list of disjoint windows. Each
-            name defaults to zero and can receive a uniform or Gaussian fit
-            prior. Initial values, prior bounds, and prior widths are in ppm.
-            Supply initial values through keyword arguments. Positive
-            offsets increase model depths. Different offsets add in overlaps.
+        error_excess : float
+            Extra error, in units of transit/eclipse depth, added in
+            quadrature to every measured error: the likelihood uses
+            sqrt(error**2 + error_excess**2).  Fit for it (e.g. with a
+            uniform prior from 0 to 1e-4) to account for underestimated
+            errors or scatter the model cannot explain.
+        transit_offsets : dict, optional
+            Per-instrument offsets for transit data, as a dict mapping each
+            offset parameter name to the (start, end) indices of the data it
+            applies to, e.g. {"offset_niriss": (0, 1010),
+            "offset_nrs1": (1010, 2397)}.  Each name becomes a parameter
+            with a default value of 0, which can be fit for like any other
+            (e.g. fit_info.add_uniform_fit_param("offset_niriss", -2e-4, 2e-4)).
+            A positive offset means the observed depths are decreased
+            before comparing to the model.  Each range must satisfy
+            0 <= start < end, and ranges may not overlap.  Leave one
+            instrument without an offset to serve as the reference.
+        eclipse_offsets : dict, optional
+            Same as above, but for eclipse depths.  A name may appear in
+            both transit_offsets and eclipse_offsets to share one offset.
         profile_type : string
-            "isothermal", "parametric" (Madhusudhan & Seager 2009) or
-            "radiative_solution" (Line et al 2013) T/P profile
-            parameterizations.  This profile applies to the dayside, and is
+            "isothermal", "parametric" (Madhusudhan & Seager 2009),
+            "radiative_solution" (Line et al 2013), or "guillot" (Guillot
+            2010) T/P profile parameterizations.  This profile applies to the dayside, and is
             used for eclipse depths.
         transit_profile_type : string
             Same options as profile_type.  This profile applies to the
@@ -952,7 +964,10 @@ class CombinedRetriever:
             temperature is T_transit, falling back to T.
         transit_terminator : TwoSectorTerminator, optional
             A cold and hot terminator template for a 1.5-D transit retrieval.
-            Its named sector values are added to the returned FitInfo.
+            Its named sector values are added to the returned FitInfo.  For
+            Guillot sectors, the shared T_star, Rs, a, Mp, Rp, log_k_th, and
+            T_int are taken from the template; any of these also passed here
+            must agree with it.
         profile_kwargs : kwargs
             T/P profile arguments.  For "isothermal": T (K).  For "parametric":
             T0, log_P1, alpha1, alpha2, log_P3, T3. Pressures are
@@ -960,6 +975,8 @@ class CombinedRetriever:
             T_star, Rs, a, Mp, Rp, beta, log_k_th, log_gamma, log_gamma2,
             alpha, and T_int (optional).  We recommend that T_star, Rs, a, and
             Mp be fixed, and that T_int be omitted (which sets it to 100 K).
+            For "guillot": the same as "radiative_solution", without
+            log_gamma2 and alpha.
             
 
         Returns
@@ -974,7 +991,41 @@ class CombinedRetriever:
             if not isinstance(transit_terminator, TwoSectorTerminator):
                 raise TypeError(
                     "transit_terminator must be a TwoSectorTerminator")
-            all_variables.update(transit_terminator.retrieval_defaults())
+            for name, value in \
+                    transit_terminator.retrieval_defaults().items():
+                current = all_variables.get(name)
+                if name != "transit_terminator" and current is not None \
+                   and not np.isclose(current, value):
+                    raise ValueError(
+                        "{}={} conflicts with the transit_terminator's "
+                        "{}={}".format(name, current, name, value))
+                all_variables[name] = value
+
+        offset_names = set()
+        for kind, offsets in (("transit", transit_offsets),
+                              ("eclipse", eclipse_offsets)):
+            if offsets is None:
+                continue
+            for name, index_range in offsets.items():
+                if name in all_variables and name not in offset_names:
+                    raise ValueError(
+                        "Offset name {} conflicts with an existing "
+                        "parameter".format(name))
+                if len(index_range) != 2 or \
+                   not 0 <= index_range[0] < index_range[1]:
+                    raise ValueError(
+                        "Range for offset {} must be (start, end) with "
+                        "0 <= start < end".format(name))
+                all_variables[name] = 0
+                offset_names.add(name)
+
+            sorted_ranges = sorted(offsets.items(), key=lambda kv: kv[1][0])
+            for (name1, range1), (name2, range2) in zip(
+                    sorted_ranges, sorted_ranges[1:]):
+                if range1[1] > range2[0]:
+                    raise ValueError(
+                        "{} offsets {} {} and {} {} overlap".format(
+                            kind, name1, tuple(range1), name2, tuple(range2)))
         
         fit_info = FitInfo(all_variables)
         return fit_info

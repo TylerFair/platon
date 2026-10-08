@@ -1,6 +1,5 @@
 import numpy as np
 from ._params import _UniformParam, _GaussianParam, _Param
-from ._offsets import normalize_offset_map, validate_offset_value
 
 
 class FitInfo:
@@ -12,56 +11,13 @@ class FitInfo:
         for key in guesses_dict:
             self.all_params[key] = _Param(guesses_dict[key])
 
-        for spectrum in ("transit", "eclipse"):
-            key = f"{spectrum}_offset_windows"
-            if key in self.all_params:
-                windows = normalize_offset_map(self.all_params[key].best_guess)
-                self.all_params[key].best_guess = windows
-                for name in windows:
-                    self.all_params.setdefault(name, _Param(0.0))
-                    validate_offset_value(self.all_params[name].best_guess)
-
-    def add_offset(self, name, windows, value=None, spectrum="transit"):
-        """Register an additive depth offset; overlapping offsets sum.
-
-        Parameters
-        ----------
-        name : str
-            Parameter name, used when assigning a fit prior.
-        windows : tuple or list of tuples
-            Half-open (start, end) row indexes, or a list of disjoint pairs.
-        value : float, optional
-            Offset in ppm. Defaults to zero for new parameters; omitting it
-            preserves an existing parameter's value and prior.
-        spectrum : {'transit', 'eclipse'}, optional
-            Spectrum whose rows receive the offset (default 'transit').
-        """
-        if spectrum not in {"transit", "eclipse"}:
-            raise ValueError("spectrum must be transit or eclipse")
-        normalized = normalize_offset_map({name: windows})
-        existing = self.all_params.get(name)
-        if value is None:
-            value = 0.0 if existing is None else existing.best_guess
-        validate_offset_value(value)
-        if existing is not None and value != existing.best_guess:
-            raise ValueError(f"Cannot replace the existing value or prior for {name}")
-        key = f"{spectrum}_offset_windows"
-        current = self.all_params.get(key)
-        mapping = {} if current is None else dict(current.best_guess)
-        if name in mapping:
-            raise ValueError(f"Already registered or fitting for {name}")
-        mapping.update(normalized)
-        self.all_params[key] = _Param(mapping)
-        if existing is None:
-            self.all_params[name] = _Param(value)
-
     def add_uniform_fit_param(self, name, low_lim, high_lim,
                               low_guess=None, high_guess=None):
         '''Fit for the parameter `name` using a uniform prior between `low_lim`
         and `high_lim`.  If using emcee, the walkers' initial values for this
         parameter are randomly selected to be between `low_guess` and
         `high_guess`.  If not specified, `low_guess` is set to `low_lim`, and
-        similarly with `high_guess`. Offset values and bounds are in ppm.'''
+        similarly with `high_guess`.'''
 
         if name in self.fit_param_names:
             raise ValueError("Already fitting for {0}".format(name))
@@ -104,8 +60,7 @@ class FitInfo:
         deviation `std`.  If using emcee, the walkers' initial values for this
         parameter are randomly selected to be between `low_guess` and
         `high_guess`.  If `low_guess` is None, it is set to mean-2*std; if
-        `high_guess` is None, it is set to mean+2*std. Offset means, standard
-        deviations, and initial bounds are in ppm.'''
+        `high_guess` is None, it is set to mean+2*std.'''
 
         if name in self.fit_param_names:
             raise ValueError("Already fitting for {0}".format(name))

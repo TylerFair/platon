@@ -19,8 +19,7 @@ To compute transit depths, look at transit_depth_example.py, then go to
   Mp = 0.73 * M_jup
   Rp = 1.40 * R_jup
   T = 1200
-  profile = Profile()
-  profile.set_isothermal(T)
+  profile = Profile.isothermal(T)
 
   # The initializer loads all data files.  Create a TransitDepthCalculator
   # object and hold on to it
@@ -74,7 +73,7 @@ To retrieve atmospheric parameters, look at retrieve_dynesty.py, retrieve_multin
   fit_info.add_uniform_fit_param("logZ", -1, 3)
   fit_info.add_uniform_fit_param("CO_ratio", 0.2, 2)
   fit_info.add_uniform_fit_param("log_cloudtop_P", -0.99, 5)
-  fit_info.add_uniform_fit_param("error_multiple", 0.5, 5)
+  fit_info.add_uniform_fit_param("error_excess", 0, 1e-4)
   
   # Run nested sampling. You can replace run_dynesty with run_multinest,
   # which is sometimes much faster and more robust
@@ -94,7 +93,9 @@ of 10^5 Pa), the temperature of the isothermal atmosphere, and the
 metallicity.  Other parameters you can retrieve for include the stellar radius,
 the planetary mass, C/O ratio,
 the cloudtop pressure, the scattering factor, the scattering slope,
-and the error multiple--which multiplies all errors by a constant.  We recommend
+and the error excess--an extra error, in units of transit depth, that is added
+in quadrature to all errors to account for underestimated errors or scatter the
+model cannot explain.  We recommend
 either fixing the stellar radius and planetary mass to the measured values, or
 setting Gaussian priors on them to account for measurement errors.
 
@@ -118,9 +119,8 @@ to plotting the posterior distribution and the best fit::
      pickle.dump(result, f)
 
   from platon.plotter import Plotter
-  plotter = Plotter()
-  plotter.plot_retrieval_transit_spectrum(result, prefix="best_fit")
-  plotter.plot_retrieval_corner(result, filename="dynesty_corner.png")
+  Plotter.plot_retrieval_transit_spectrum(result, prefix="best_fit")
+  Plotter.plot_retrieval_corner(result, filename="dynesty_corner.png")
 
 If you prefer using MCMC instead of Nested Sampling in your retrieval, you can
 use the run_emcee method instead of the run_dynesty method. Do note that

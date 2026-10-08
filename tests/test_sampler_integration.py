@@ -10,7 +10,6 @@ import numpy as np
 import pytest
 
 from platon.combined_retriever import CombinedRetriever
-from platon.observations import SpectrumData
 
 
 def _sampler_stubs(fit_info):
@@ -83,23 +82,24 @@ def _sampler_stubs(fit_info):
 def test_sampler_drivers_preserve_tls_offsets_and_opacity_settings(backend, spectra):
     transit_bins = np.array([[1e-6, 1.1e-6], [1e-6, 1.1e-6], [2e-6, 2.1e-6]])
     eclipse_bins = np.array([[4e-6, 4.1e-6], [5e-6, 5.1e-6]])
-    transit_data = SpectrumData(
-        transit_bins, np.array([0.01, 0.0101, 0.0101]), np.full(3, 1e-5),
-        {"niriss": (0, 1), "nirspec": (1, 3)}, {"niriss": "niriss", "nirspec": "nirspec"})
-    eclipse_data = SpectrumData(
-        eclipse_bins, np.array([0.001, 0.0008]), np.full(2, 1e-5),
-        {"reference": (0, 1), "miri": (1, 2)}, {"reference": "reference", "miri": "miri"})
+    transit_depths = np.array([0.01, 0.0101, 0.0101])
+    eclipse_depths = np.array([0.001, 0.0008])
+    fit_transit = spectra in {"transit", "joint"}
+    fit_eclipse = spectra in {"eclipse", "joint"}
     tls_options = dict(T_fac=6500, fac_cov_frac=0.05, logg_phot=4.2,
                        logg_spot=4.0, logg_fac=4.6, feh=-0.3,
                        stellar_grid_only=True, stellar_blackbody=False,
                        validate_T_grid=False)
     fit_info = CombinedRetriever.get_default_fit_info(
         7e8, 1.9e27, 7e7, T=1000, T_star=5500, T_spot=4500,
-        spot_cov_frac=0.02, stellar_grid="legacy", **tls_options)
-    if spectra in {"transit", "joint"}:
-        transit_data.add_offsets(fit_info)
-    if spectra in {"eclipse", "joint"}:
-        eclipse_data.add_offsets(fit_info, spectrum="eclipse")
+        spot_cov_frac=0.02, stellar_grid="legacy",
+        transit_offsets={"offset_nirspec": (1, 3)} if fit_transit else None,
+        eclipse_offsets={"offset_miri": (1, 2)} if fit_eclipse else None,
+        **tls_options)
+    if fit_transit:
+        fit_info.add_uniform_fit_param("offset_nirspec", -5e-4, 5e-4)
+    if fit_eclipse:
+        fit_info.add_uniform_fit_param("offset_miri", -5e-4, 5e-4)
     state, emcee_stub, dynesty_stub, nautilus_stub, multinest_stub = _sampler_stubs(fit_info)
     calculators = []
 
@@ -123,13 +123,13 @@ def test_sampler_drivers_preserve_tls_offsets_and_opacity_settings(backend, spec
             if "H2O" not in kwargs["zero_opacities"]:
                 baseline += 1e-4
             depths = np.full(len(self.bins), baseline)
-            info = ({"unbinned_depths": depths,
+            info = ({"unbinned_depths": depths.copy(),
                      "unbinned_correction_factors": np.ones(len(depths))}
-                    if self.spectrum == "transit" else {"unbinned_eclipse_depths": depths})
+                    if self.spectrum == "transit" else {"unbinned_eclipse_depths": depths.copy()})
             return self.bins.mean(axis=1), depths, info
 
-    transit_args = (transit_data.wavelength_bins, transit_data.depths, transit_data.errors)
-    eclipse_args = (eclipse_data.wavelength_bins, eclipse_data.depths, eclipse_data.errors)
+    transit_args = (transit_bins, transit_depths, np.full(3, 1e-5))
+    eclipse_args = (eclipse_bins, eclipse_depths, np.full(2, 1e-5))
     if spectra == "transit":
         eclipse_args = (None, None, None)
     elif spectra == "eclipse":
@@ -163,21 +163,21 @@ def test_sampler_drivers_preserve_tls_offsets_and_opacity_settings(backend, spec
         residuals = []
         if transit_args[0] is not None:
             model = np.array([0.01, 0.01, 0.01])
-            model[1:] += values["offset_nirspec"] * 1e-6
-            residuals.extend(model - transit_data.depths)
+            model[1:] += values["offset_nirspec"]
+            residuals.extend(model - transit_depths)
         if eclipse_args[0] is not None:
             model = np.array([0.001, 0.001])
-            model[1] += values["offset_miri"] * 1e-6
-            residuals.extend(model - eclipse_data.depths)
+            model[1] += values["offset_miri"]
+            residuals.extend(model - eclipse_depths)
         expected_pointwise.append(-0.5 * (np.square(np.array(residuals) / 1e-5)
                                          + np.log(2 * np.pi * 1e-10)))
     np.testing.assert_allclose(result.pointwise_lnlikes, expected_pointwise)
     np.testing.assert_allclose(loo.call_args.args[0], expected_pointwise)
     if transit_args[0] is not None:
-        np.testing.assert_allclose(result.best_fit_transit_depths, transit_data.depths)
+        np.testing.assert_allclose(result.best_fit_transit_depths, transit_depths)
         np.testing.assert_allclose(result.random_transit_depths, np.full((3, 3), 0.01))
     if eclipse_args[0] is not None:
-        np.testing.assert_allclose(result.best_fit_eclipse_depths, eclipse_data.depths)
+        np.testing.assert_allclose(result.best_fit_eclipse_depths, eclipse_depths)
         np.testing.assert_allclose(result.random_eclipse_depths, np.full((3, 2), 0.001))
     for calculator in calculators:
         assert calculator.options["stellar_grid"] == "legacy"
@@ -240,15 +240,15 @@ def test_old_fit_info_uses_stellar_and_temperature_validation_defaults():
 
 def test_out_of_prior_trials_do_not_invoke_forward_models():
     fit_info = CombinedRetriever.get_default_fit_info(
-        7e8, 1.9e27, 7e7, T=1000, transit_offset_windows={"offset_visit": (0, 1)})
-    fit_info.add_uniform_fit_param("offset_visit", -500, 500)
+        7e8, 1.9e27, 7e7, T=1000, transit_offsets={"offset_visit": (0, 1)})
+    fit_info.add_uniform_fit_param("offset_visit", -5e-4, 5e-4)
     calculator = mock.Mock()
     calculator.compute_depths.side_effect = AssertionError("Invalid trial reached calculator")
     retriever = CombinedRetriever()
     arguments = (calculator, None, fit_info, np.array([0.01]), np.array([1e-5]), None, None)
-    assert retriever._ln_prob([600], *arguments) == -np.inf
+    assert retriever._ln_prob([6e-4], *arguments) == -np.inf
     _, nested_likelihood = retriever._sampler_functions(
         fit_info, calculator, None, np.array([0.01]), np.array([1e-5]),
         None, None, (), print_evaluations=False)
-    assert nested_likelihood([600]) == -np.inf
+    assert nested_likelihood([6e-4]) == -np.inf
     calculator.compute_depths.assert_not_called()

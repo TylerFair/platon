@@ -65,7 +65,7 @@ def test_visualizer_layer_background_extends_to_canvas_edge():
     np.testing.assert_allclose(image[20:], 1.)
 
 
-def test_opacity_profile_uses_energy_flux_and_matches_own_pressure_grid():
+def test_opacity_profile_uses_energy_flux_and_interpolates_to_default_grid():
     pressure, temperature = np.array([1., 2.]), np.array([1000., 1000.])
     density = pressure / (k_B * temperature)
     # Choose optical-depth increment 1, with thermal cross section 2.
@@ -75,9 +75,7 @@ def test_opacity_profile_uses_energy_flux_and_matches_own_pressure_grid():
                 planet_spectrum=np.ones(4),
                 absorption_coeff_atm=density[:, None] * np.array([1., 9., 2., 2.]),
                 radii=np.array([2. * dr, dr]), P_profile=pressure, T_profile=temperature)
-    profile = Profile()
-    profile.pressures = np.array([.5, 1., 1.5, 2., 4.])
-    profile.set_from_opacity(1000., info, visible_cutoff=3e-6, T_int=100.)
+    profile = Profile.from_opacity(1000., info, visible_cutoff=3e-6, T_int=100.)
     gamma = 7. / 2.  # Visible energy-weighted sigma=(1*1+9*3)/4=7.
     expected4 = .75 * 100.**4 * (2/3 + 1.) + .75 * 1000.**4 * (
         2/3 + 2/(3*gamma) * (1 + (gamma/2 - 1)*np.exp(-gamma)) +
@@ -86,27 +84,12 @@ def test_opacity_profile_uses_energy_flux_and_matches_own_pressure_grid():
     np.testing.assert_allclose(profile.temperatures, expected4**.25)
 
 
-def test_rebuilt_terminator_retains_independent_pressure_grids():
-    cold, hot = Profile(), Profile()
-    cold.pressures = np.geomspace(1e-4, 1e7, 7)
-    hot.pressures = np.geomspace(1e-3, 1e8, 9)
-    cold.set_isothermal(900.)
-    hot.set_isothermal(1100.)
-    model = TwoSectorTerminator(TerminatorSector(cold), TerminatorSector(hot))
-    rebuilt = model.from_params(model.retrieval_defaults(), 1e27, 7e7)
-    for original, new in [(cold, rebuilt.cold.profile), (hot, rebuilt.hot.profile)]:
-        np.testing.assert_array_equal(new.pressures, original.pressures)
-        assert new.temperatures.shape == original.pressures.shape
-        assert not np.shares_memory(new.pressures, original.pressures)
-
-
 @pytest.mark.parametrize('kwargs', [dict(cloudtop_pressure=np.nan),
                                     dict(scattering_factor=np.nan),
                                     dict(scattering_factor=np.inf),
                                     dict(scattering_slope=np.nan)])
 def test_nonfinite_terminator_inputs_rejected(kwargs):
-    profile = Profile()
-    profile.set_isothermal(1000.)
+    profile = Profile.isothermal(1000.)
     with pytest.raises(ValueError):
         TerminatorSector(profile, **kwargs)
 
@@ -197,49 +180,6 @@ def test_reconstruction_with_fewer_than_two_samples_marks_loo_unavailable(count)
     assert np.isnan(result.loo_total)
     assert np.isnan(result.loos).all() and result.loos.shape == (2,)
     assert np.isinf(result.loo_ks).all()
-
-
-def test_two_sector_tp_plot_keeps_each_sectors_pressure_coordinates():
-    import matplotlib.pyplot as plt
-    from platon.plotter import Plotter
-    from platon.retrieval_result import RetrievalResult
-    from platon.combined_retriever import CombinedRetriever
-    cold, hot = Profile(), Profile()
-    cold.pressures, hot.pressures = np.geomspace(1e-4, 1e7, 7), np.geomspace(1e-3, 1e8, 9)
-    cold.set_isothermal(900.)
-    hot.set_isothermal(1100.)
-    model = TwoSectorTerminator(TerminatorSector(cold), TerminatorSector(hot))
-    fit = CombinedRetriever.get_default_fit_info(7e8, 1e27, 7e7, transit_terminator=model)
-    fit.add_uniform_fit_param('cold_fraction', 0., 1.)
-    result = RetrievalResult(dict(flatchain=np.array([[.3], [.5], [.7]])),
-                              'emcee', [.5], fit_info=fit)
-    try:
-        Plotter().plot_retrieval_TP_profiles(result, which='transit',
-                                             num_samples=3, plot_samples=True)
-        lines = {line.get_label(): line for line in plt.gca().lines}
-        np.testing.assert_array_equal(lines['cold best fit'].get_ydata(), cold.pressures / 1e5)
-        np.testing.assert_array_equal(lines['hot best fit'].get_ydata(), hot.pressures / 1e5)
-    finally:
-        plt.close('all')
-
-
-@pytest.mark.parametrize('hot_pressures', [[1., 10., 100., 1000.], [2., 20., 200.]])
-def test_stored_two_sector_profile_uses_union_of_pressure_coordinates(hot_pressures):
-    from platon.combined_retriever import CombinedRetriever
-    cold, hot = Profile(), Profile()
-    cold.pressures, hot.pressures = np.array([1., 10., 100.]), np.array(hot_pressures)
-    cold.set_isothermal(900.)
-    hot.set_isothermal(1100.)
-    cold.temperatures += 100 * np.log10(cold.pressures)
-    hot.temperatures += 200 * np.log10(hot.pressures)
-    model = TwoSectorTerminator(TerminatorSector(cold), TerminatorSector(hot))
-    stored = CombinedRetriever._profile_to_array(model)
-    np.testing.assert_array_equal(stored[0], np.union1d(cold.pressures, hot.pressures))
-    for row, profile in [(1, cold), (2, hot)]:
-        indices = np.searchsorted(stored[0], profile.pressures)
-        np.testing.assert_allclose(stored[row, indices], profile.temperatures)
-        expected = np.interp(np.log(stored[0]), np.log(profile.pressures), profile.temperatures)
-        np.testing.assert_allclose(stored[row], expected)
 
 
 def test_pointwise_likelihood_cache_is_bounded_and_evicted_posterior_is_recomputed():

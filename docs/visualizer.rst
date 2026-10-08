@@ -11,8 +11,7 @@ calculated by the transit depth calculator, which you can get using::
   from platon.transit_depth_calculator import TransitDepthCalculator
   from platon.visualizer import Visualizer
 
-  profile = Profile()
-  profile.set_isothermal(T)
+  profile = Profile.isothermal(T)
   calculator = TransitDepthCalculator()
   wavelengths, depths, info = calculator.compute_depths(
       profile, Rs, Mp, Rp, full_output=True)

@@ -18,6 +18,7 @@ from platon._stellar_grid import (grid_from_dict, load_stellar_grid,
                                  ShardedSpectra)
 from platon._atmosphere_solver import AtmosphereSolver
 from platon.errors import AtmosphereError
+from platon.TP_profile import Profile
 from tests._support import synthetic_grid, make_native_h5, tiny_profile
 
 
@@ -403,9 +404,7 @@ def test_two_sector_recursion_forwards_stellar_components(tiny_calculator):
     from platon.constants import R_sun, R_jup, M_jup
     from platon.terminator import TerminatorSector, TwoSectorTerminator
     calc = tiny_calculator
-    cold, hot = tiny_profile(), tiny_profile()
-    cold.set_isothermal(800.)
-    hot.set_isothermal(1400.)
+    cold, hot = Profile.isothermal(800.), Profile.isothermal(1400.)
     model = TwoSectorTerminator(TerminatorSector(cold), TerminatorSector(hot), .3)
     params = dict(T_star=4200., T_spot=3200., spot_cov_frac=.1,
                   T_fac=4800., fac_cov_frac=.05, logg_phot=4.3,

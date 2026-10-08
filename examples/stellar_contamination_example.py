@@ -11,8 +11,7 @@ Mp = 0.30 * M_jup
 Rp = 0.80 * R_jup
 T = 700
 
-p = Profile()
-p.set_isothermal(T)
+p = Profile.isothermal(T)
 
 # PRISM-like bins from 0.6 to 5.3 um, resolving power about 100
 edges = np.geomspace(0.6e-6, 5.3e-6, int(100*np.log(5.3/0.6)) + 1)

@@ -15,9 +15,6 @@ P_profile = data[:,0] / Pa_to_cgs
 T_profile = data[:,1]
 T_profile[T_profile > 3000] = 3000
 
-#plt.semilogy(T_profile, P_profile)
-#plt.show()
-
 header = linecache.getline(data_file, 2).split()
 included_species = ["CO", "CO2", "C2H2", "H2", "H", "H2O", "HCN", "He", "NH3", "O2", "NO", "OH"]
 atm_abundances = {}
@@ -31,13 +28,13 @@ for s in included_species:
 #plt.show()
 
 #Use the exact P/T points from the file as the atmospheric layers
-p = Profile()
-p.pressures = P_profile
-p.temperatures = T_profile
+p = Profile(P_profile, T_profile)
 
 calculator = TransitDepthCalculator()
 wavelengths, depths, _ = calculator.compute_depths(p, 0.75 * R_sun, 1.13 * M_jup, 1.13 * R_jup, logZ=None, CO_ratio=None, custom_abundances=atm_abundances)
 
 plt.semilogx(1e6 * wavelengths, depths)
+plt.xlabel("Wavelength ($\mu$m)")
+plt.ylabel("Transit depth")
 #plt.ylim(0.0228, 0.0256)
 plt.show()

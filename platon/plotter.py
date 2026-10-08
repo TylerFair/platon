@@ -3,7 +3,6 @@ import numpy as np
 import corner
 from .constants import METRES_TO_UM, BAR_TO_PASCALS, R_jup
 from .retrieval_result import RetrievalResult
-from ._offsets import offset_labels
 from . TP_profile import Profile
 import numpy as _np
 import dynesty
@@ -17,12 +16,12 @@ default_style = ['default',
         }]
 plt.style.use(default_style)
 
-class Plotter():
-    def __init__(self):
-        pass
+class Plotter:
+    """Plotting functions for PLATON results.  All methods are class
+    methods, so call them directly, e.g. Plotter.plot_retrieval_corner(result)."""
 
-
-    def plot_retrieval_TP_profiles(self, retrieval_result, plot_samples=False,
+    @classmethod
+    def plot_retrieval_TP_profiles(cls, retrieval_result, plot_samples=False,
                                    plot_1sigma_bounds=True, num_samples=100,
                                    prefix=None, which=None):
         """
@@ -60,18 +59,16 @@ class Plotter():
                 terminator_param.best_guess
 
         if terminator is not None:
-            equal_samples = self._get_equal_samples(retrieval_result)
+            equal_samples = cls._get_equal_samples(retrieval_result)
             indices = np.random.choice(len(equal_samples), num_samples)
             profile_pressures = _np.asarray(
                 terminator.cold.profile.pressures)
-            hot_pressures = _np.asarray(terminator.hot.profile.pressures)
             cold_temperatures = []
             hot_temperatures = []
             for index in indices:
                 params_dict = fit_info._interpret_param_array(
                     equal_samples[index])
-                model = terminator.from_params(
-                    params_dict, params_dict["Mp"], params_dict["Rp"])
+                model = terminator.from_params(params_dict)
                 cold_temperatures.append(
                     _np.asarray(model.cold.profile.temperatures))
                 hot_temperatures.append(
@@ -80,12 +77,11 @@ class Plotter():
             cold_temperatures = np.asarray(cold_temperatures)
             hot_temperatures = np.asarray(hot_temperatures)
             pressure_bars = profile_pressures / BAR_TO_PASCALS
-            hot_pressure_bars = hot_pressures / BAR_TO_PASCALS
             plt.figure()
             if plot_samples:
                 plt.plot(cold_temperatures.T, pressure_bars, color="C0",
                          alpha=0.12, zorder=1)[0].set_label("cold samples")
-                plt.plot(hot_temperatures.T, hot_pressure_bars, color="C3",
+                plt.plot(hot_temperatures.T, pressure_bars, color="C3",
                          alpha=0.12, zorder=1)[0].set_label("hot samples")
             if plot_1sigma_bounds:
                 plt.fill_betweenx(
@@ -94,21 +90,18 @@ class Plotter():
                     np.percentile(cold_temperatures, 84, axis=0),
                     color="C0", alpha=0.25, label="cold 1$\\sigma$")
                 plt.fill_betweenx(
-                    hot_pressure_bars,
+                    pressure_bars,
                     np.percentile(hot_temperatures, 16, axis=0),
                     np.percentile(hot_temperatures, 84, axis=0),
                     color="C3", alpha=0.25, label="hot 1$\\sigma$")
 
-            best = terminator.from_params(
-                best_params_dict, best_params_dict["Mp"],
-                best_params_dict["Rp"])
+            best = terminator.from_params(best_params_dict)
             plt.plot(best.cold.profile.temperatures, pressure_bars,
                      color="C0", label="cold best fit")
-            plt.plot(best.hot.profile.temperatures, hot_pressure_bars,
+            plt.plot(best.hot.profile.temperatures, pressure_bars,
                      color="C3", label="hot best fit")
             plt.yscale("log")
-            plt.ylim(min(pressure_bars.min(), hot_pressure_bars.min()),
-                     max(pressure_bars.max(), hot_pressure_bars.max()))
+            plt.ylim(pressure_bars.min(), pressure_bars.max())
             plt.gca().invert_yaxis()
             plt.xlabel("Temperature (K)")
             plt.ylabel("Pressure/bars")
@@ -139,24 +132,22 @@ class Plotter():
             profile_pressures = stored[0, 0]
             temperature_arr = stored[:, 1]
         else:
-            equal_samples = self._get_equal_samples(retrieval_result)
+            equal_samples = cls._get_equal_samples(retrieval_result)
             indices = np.random.choice(len(equal_samples), num_samples)
-            t_p_profile = Profile()
-            profile_pressures = _np.asarray(t_p_profile.pressures)
             temperature_arr = []
             for index in indices:
                 params_dict = fit_info._interpret_param_array(
                     equal_samples[index])
-                t_p_profile.set_from_params_dict(
+                t_p_profile = Profile.from_params_dict(
                     profile_type, params_dict, suffix=suffix)
                 temperature_arr.append(_np.asarray(t_p_profile.temperatures))
+            profile_pressures = _np.asarray(t_p_profile.pressures)
             temperature_arr = np.asarray(temperature_arr)
 
         if best_dict is not None and "full_TP_profile" in best_dict:
             best_pressures, best_temperatures = best_dict["full_TP_profile"]
         else:
-            t_p_profile = Profile()
-            t_p_profile.set_from_params_dict(
+            t_p_profile = Profile.from_params_dict(
                 profile_type, best_params_dict, suffix=suffix)
             best_pressures = _np.asarray(t_p_profile.pressures)
             best_temperatures = _np.asarray(t_p_profile.temperatures)
@@ -203,25 +194,26 @@ class Plotter():
         return equal_samples
 
 
-    def plot_retrieval_corner(self, retrieval_result, filename=None, **args):
+    @classmethod
+    def plot_retrieval_corner(cls, retrieval_result, filename=None, **args):
         """
         Input a RetrievalResult object to make a corner plot for the 
         posteriors of the fitted parameters.
         """
         assert(isinstance(retrieval_result, RetrievalResult))
-        options = dict(labels=offset_labels(retrieval_result.fit_info.fit_param_names,
-                                           retrieval_result.fit_info))
+        # Defaults; explicit keyword arguments (e.g. labels) override them
+        options = dict(labels=retrieval_result.fit_info.fit_param_names)
         if retrieval_result.retrieval_type in ("dynesty", "nautilus"):
             samples = retrieval_result.samples
             options.update(weights=retrieval_result.weights, show_titles=True)
         elif retrieval_result.retrieval_type == "pymultinest":
             samples = retrieval_result.equal_samples
-            options['show_titles'] = True
+            options["show_titles"] = True
         elif retrieval_result.retrieval_type == "emcee":
             samples = retrieval_result.flatchain
         else:
             assert(False)
-        options['range'] = [0.99] * samples.shape[1]
+        options["range"] = [0.99] * samples.shape[1]
         options.update(args)
         fig = corner.corner(samples, **options)
 
@@ -229,7 +221,8 @@ class Plotter():
             fig.savefig(filename)
 
 
-    def plot_retrieval_transit_spectrum(self, retrieval_result, prefix=None):
+    @classmethod
+    def plot_retrieval_transit_spectrum(cls, retrieval_result, prefix=None):
         """
         Input a RetrievalResult object to make a plot of the data,
         best fit transit model both at native resolution and data's resolution, 
@@ -248,14 +241,22 @@ class Plotter():
         plt.plot(METRES_TO_UM * retrieval_result.best_fit_transit_dict["unbinned_wavelengths"],
                     retrieval_result.best_fit_transit_dict["unbinned_depths"] * 
                     retrieval_result.best_fit_transit_dict['unbinned_correction_factors'],
-                    color='r', label="Calculated (unbinned)", zorder=3)
+                    color='r', label="Calculated (unbinned, unshifted)", zorder=3)
         plt.errorbar(METRES_TO_UM * retrieval_result.transit_wavelengths,
                         retrieval_result.transit_depths,
                         yerr = retrieval_result.transit_errors,
                         fmt='.', color='k', label="Observed", zorder=5)
+        points = plt.scatter(
+            METRES_TO_UM * retrieval_result.transit_wavelengths,
+            retrieval_result.transit_depths,
+            c=retrieval_result["loos"], cmap="viridis",
+            s=25, edgecolors='k', linewidths=0.5,
+            label="Observed", zorder=6)
+        plt.colorbar(points, label="LOO log predictive density", pad=0.01)
+        
         plt.scatter(METRES_TO_UM * retrieval_result.transit_wavelengths,
                     retrieval_result.best_fit_transit_depths,
-                    color='b', label="Calculated (binned)", zorder=4)                        
+                    color='b', label="Calculated (binned)", zorder=4)     
                             
         plt.xlabel(r"Wavelength ($\mu m$)")
         plt.ylabel("Transit depth")
@@ -266,7 +267,8 @@ class Plotter():
             plt.savefig(prefix + "_transit.png")
 
 
-    def plot_retrieval_eclipse_spectrum(self, retrieval_result, prefix=None):
+    @classmethod
+    def plot_retrieval_eclipse_spectrum(cls, retrieval_result, prefix=None):
         """
         Input a RetrievalResult object to make a plot of the data,
         best fit eclipse model both at native resolution and data's resolution, 
@@ -289,6 +291,14 @@ class Plotter():
                         retrieval_result.eclipse_depths,
                         yerr=retrieval_result.eclipse_errors,
                         fmt='.', color='k', label="Observed")
+        points = plt.scatter(
+            METRES_TO_UM * retrieval_result.eclipse_wavelengths,
+            retrieval_result.eclipse_depths,
+            c=retrieval_result["loos"], cmap="viridis",
+            s=25, edgecolors='k', linewidths=0.5,
+            label="Observed", zorder=6)
+        plt.colorbar(points, label="LOO log predictive density", pad=0.01)
+        
         plt.scatter(METRES_TO_UM * retrieval_result.eclipse_wavelengths,
                     retrieval_result.best_fit_eclipse_depths,
                     color='r', label="Calculated (binned)")
@@ -302,7 +312,8 @@ class Plotter():
             plt.savefig(prefix + "_eclipse.png")
 
 
-    def plot_optical_depth(self, depth_dict, prefix=None):
+    @classmethod
+    def plot_optical_depth(cls, depth_dict, prefix=None):
         """
         Input a depth dictionary created by the TransitDepthCalculator or EclipseDepthCalculator
         to plot optical depth as a function of wavelength and pressure.
@@ -331,24 +342,25 @@ class Plotter():
             plt.savefig(prefix + fname + "_optical_depth.png")
 
 
-    def plot_eclipse_contrib_func(self, eclipse_depth_dict, log_scale=False, prefix=None):
+    @classmethod
+    def plot_contrib_func(cls, info_dict, log_scale=False, prefix=None):
         """
-        Input an eclipse depth dictionary created by the EclipseDepthCalculator
+        Input an info_dict created by the TransitDepthCalculator or EclipseDepthCalculator
         to plot emission contribution function as a function of wavelength and pressure.
         The log_scale parameter allows the user to toggle between plotting of the contribution 
         function in log or linear scale. 
         """
-        assert('contrib' in eclipse_depth_dict.keys())
+        assert('contrib' in info_dict)
 
         if log_scale:
-            contrib_func = np.log10(eclipse_depth_dict['contrib'].T)
+            contrib_func = np.log10(info_dict['contrib'].T)
             contrib_func[np.logical_or(np.isinf(contrib_func), contrib_func < -9.)] = np.nan
         else:
-            contrib_func = eclipse_depth_dict['contrib'].T
+            contrib_func = info_dict['contrib'].T
 
         plt.figure(figsize=(6,4))
-        plt.contourf(eclipse_depth_dict['unbinned_wavelengths'] * METRES_TO_UM, 
-                         np.log10(0.5 * (eclipse_depth_dict['P_profile'][1:] + eclipse_depth_dict['P_profile'][:-1]) / BAR_TO_PASCALS), contrib_func, cmap='magma_r', vmin=np.nanmin(contrib_func), vmax=np.nanmax(contrib_func))
+        plt.contourf(info_dict['unbinned_wavelengths'] * METRES_TO_UM, 
+                         np.log10(0.5 * (info_dict['P_profile'][1:] + info_dict['P_profile'][:-1]) / BAR_TO_PASCALS), contrib_func, cmap='magma_r', vmin=np.nanmin(contrib_func), vmax=np.nanmax(contrib_func))
 
         cbar = plt.colorbar(location='right')
         if log_scale:cbar.set_label('log (Contribution function)')
@@ -358,10 +370,11 @@ class Plotter():
         plt.ylabel('log (Pressure/bars)')
         plt.tight_layout()
         if prefix is not None:
-            plt.savefig(prefix + "_eclipse_contrib_func.png")
+            plt.savefig(prefix + "_contrib_func.png")
         
 
-    def plot_atm_abundances(self, atm_info, min_abund=1e-9, prefix=None):
+    @classmethod
+    def plot_atm_abundances(cls, atm_info, min_abund=1e-9, prefix=None):
         """
         Input a depth dictionary created by the TransitDepthCalculator or EclipseDepthCalculator
         or a dictionary outputed by AtmsophereSolver

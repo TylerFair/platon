@@ -64,9 +64,7 @@ def make_native_h5(path):
             r.attrs.update(TYPE=np.bytes_('lin_range_t'), x_0=6000., dx=2., n=41)
 
 
-def tiny_profile():
+def tiny_profile(T=1000.):
+    """Isothermal profile on 12 layers, for fast offline forward models."""
     from platon.TP_profile import Profile
-    profile = Profile()
-    profile.pressures = np.geomspace(1e-4, 1e8, 12)
-    profile.set_isothermal(1000.)
-    return profile
+    return Profile(np.geomspace(1e-4, 1e8, 12), np.full(12, T))

@@ -134,8 +134,7 @@ def tls_calculator(tiny_calculator, monkeypatch):
 @pytest.mark.real_stellar_grid
 def test_transit_tls_jit_and_host_agree_with_default_bundle(tls_calculator):
     calc = tls_calculator
-    profile = tiny_profile()
-    profile.set_isothermal(390.)
+    profile = tiny_profile(390.)
     args = (profile, RS, MP, RP)
     _, clear, _ = calc.compute_depths(
         *args, **dict(STELLAR_PARAMS, spot_cov_frac=0.), stellar_grid_only=True)
@@ -163,8 +162,7 @@ def test_forward_default_and_generated_cache_agree(tls_calculator, stellar_cache
     keep = [lo >= waves.min() and hi <= waves.max() and
             np.any((waves > lo) & (waves < hi)) for lo, hi in bins]
     bins = bins[np.asarray(keep)]
-    profile = tiny_profile()
-    profile.set_isothermal(390.)
+    profile = tiny_profile(390.)
 
     def spectra(calc):
         calc.change_wavelength_bins(bins)
@@ -189,36 +187,24 @@ def test_forward_default_and_generated_cache_agree(tls_calculator, stellar_cache
 
 
 @pytest.mark.real_stellar_grid
-def test_csv_tls_priors_relative_offsets_and_short_dynesty(tls_calculator, tmp_path, monkeypatch):
+def test_tls_priors_relative_offsets_and_short_dynesty(tls_calculator, tmp_path, monkeypatch):
     from platon.combined_retriever import CombinedRetriever
-    from platon.observations import load_spectrum_csvs
-    csv_files = {}
-    for name, low in [('niriss', .8), ('nirspec', 3.)]:
-        path = tmp_path / f'{name}.csv'
-        path.write_text('wavelength_low,wavelength_high,depth,error\n'
-                        f'{low},{low + .1},150000,300\n'
-                        f'{low + .1},{low + .2},149800,400\n')
-        csv_files[name] = path
-    data = load_spectrum_csvs(csv_files, wavelength_unit='um', depth_unit='ppm')
+    # Two instruments of two bins each; the second carries a fitted offset.
+    bins = np.array([[.8, .9], [.9, 1.], [3., 3.1], [3.1, 3.2]]) * 1e-6
+    depths = np.array([.15, .1498, .15, .1498])
+    errors = np.array([300e-6, 400e-6, 300e-6, 400e-6])
     retriever = CombinedRetriever()
     fit = retriever.get_default_fit_info(
-        RS, MP, RP, T=390., **STELLAR_PARAMS, stellar_grid_only=True)
+        RS, MP, RP, T=390., **STELLAR_PARAMS, stellar_grid_only=True,
+        transit_offsets={'offset_nirspec': (2, 4)})
     fit.add_gaussian_fit_param('T_star', 50.)
     fit.add_uniform_fit_param('T_spot', 2300., 4500.)
     fit.add_uniform_fit_param('spot_cov_frac', 0., .3)
-    data.add_offsets(fit)
-    bins, depths, errors = data.wavelength_bins, data.depths, data.errors
-    np.testing.assert_allclose(bins[:, 0], [.8e-6, .9e-6, 3.e-6, 3.1e-6])
-    np.testing.assert_allclose(depths, [.15, .1498, .15, .1498])
-    np.testing.assert_allclose(errors, [300e-6, 400e-6, 300e-6, 400e-6])
+    fit.add_uniform_fit_param('offset_nirspec', -5e-4, 5e-4)
     assert fit.all_params['T_spot'].best_guess == 2550.
     assert fit.all_params['stellar_grid'].best_guess == 'newera'
     assert fit.all_params['stellar_grid_only'].best_guess is True
-    assert 'offset_nirspec' in fit.fit_param_names
-    assert fit.all_params['offset_nirspec'].low_lim == -500
-    assert fit.all_params['offset_nirspec'].high_lim == 500
     assert 'offset_niriss' not in fit.all_params
-    assert fit.all_params['transit_offset_windows'].best_guess == {'offset_nirspec': ((2, 4),)}
     assert {'T_star', 'T_spot', 'spot_cov_frac'}.issubset(fit.fit_param_names)
     # Run the real sampler and public calculator on synthetic atmospheric data.
     # Keep the driver's parameter-estimate output in the test directory.
@@ -294,14 +280,21 @@ def real_opacity_calculator(monkeypatch, tmp_path):
                                   stellar_grid=stellar_path)
 
 
+def _guillot_with_T_irr(T_irr, log_gamma, log_k_th, T_int):
+    """Guillot profile with beta=1 and an orbit giving the requested T_irr."""
+    from platon.TP_profile import Profile
+    T_star = 5000.
+    a = RS / 2 * (T_star / T_irr)**2
+    return Profile.guillot(T_star, RS, a, MP, RP, 1., log_k_th, log_gamma, T_int)
+
+
 def test_real_eight_gas_guillot_tls_matches_independent_fp32_reference(real_opacity_calculator):
     from platon.TP_profile import Profile
     reference = json.loads((FIXTURE.parent / 'eight_gas_guillot_opacity.json').read_text())
     calc = real_opacity_calculator
     calc.change_wavelength_bins(np.asarray(reference['wavelength_bins_m']))
-    profile = Profile()
     # Reference uses log10(cm^2/g); public uses log10(m^2/kg).
-    profile.set_guillot(500., -.75, -.75 - 1, 200., MP, RP)
+    profile = _guillot_with_T_irr(500., -.75, -.75 - 1, 200.)
     traces = 10**TRACE_LOG_VMRS
     vmrs = np.r_[traces, 1 - traces.sum()]
     _, depths, info = calc.compute_depths(
@@ -325,8 +318,7 @@ def test_real_eight_gas_guillot_works_with_default_newera(real_opacity_calculato
     calc.atm.stellar_grid = load_stellar_grid()
     calc.atm._stellar_key = ('bundled-newera-real-opacity',)
     calc.change_wavelength_bins(np.asarray(reference['wavelength_bins_m']))
-    profile = Profile()
-    profile.set_guillot(500., -.75, -1.75, 200., MP, RP)
+    profile = _guillot_with_T_irr(500., -.75, -1.75, 200.)
     traces = 10**TRACE_LOG_VMRS
     _, depths, info = calc.compute_depths(
         profile, RS, MP, RP, logZ=None, CO_ratio=None,

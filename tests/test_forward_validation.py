@@ -123,7 +123,8 @@ def test_eclipse_temperature_validation_flag(tiny_calculator):
 
 def test_two_sector_temperature_validation_flag(tiny_calculator):
     from platon.terminator import TerminatorSector, TwoSectorTerminator
-    cold, hot = tiny_profile(), tiny_profile()
+    from platon.TP_profile import Profile
+    cold, hot = Profile.isothermal(1000.), Profile.isothermal(1000.)
     hot.temperatures[-1] = 4000.
     model = TwoSectorTerminator(TerminatorSector(cold), TerminatorSector(hot), .3)
     _, cold_depths, _ = run_transit(tiny_calculator, cold, validate_T_grid=False)
@@ -291,8 +292,10 @@ def test_bundled_isolated_temperature_gap_uses_neighbor_row_average():
     np.testing.assert_allclose(grid.interpolate(2500., 5.5, .5), expected, rtol=2e-15)
 
 
-@pytest.mark.parametrize('name', ['Rs', 'Mp', 'Rp', 'error_multiple'])
-@pytest.mark.parametrize('value', [0., -1., np.nan, np.inf])
+@pytest.mark.parametrize('name, value', [
+    (name, value) for name in ('Rs', 'Mp', 'Rp')
+    for value in (0., -1., np.nan, np.inf)] + [
+    ('error_excess', value) for value in (-1., np.nan, np.inf)])
 def test_likelihood_rejects_invalid_physical_scalars_before_forward(name, value):
     from unittest.mock import Mock
     from platon.combined_retriever import CombinedRetriever

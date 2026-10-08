@@ -43,7 +43,7 @@ jobs:
             tests/test_stellar_grid.py tests/test_forward_validation.py \
             tests/test_tls_workflows.py tests/test_sampler_integration.py \
             tests/test_support_regressions.py \
-            tests/test_offsets.py tests/test_observations.py tests/test_params.py \
+            tests/test_params.py \
             tests/test_TP_profiles.py tests/test_nautilus.py tests/test_get_data.py \
             tests/test_two_sector.py tests/test_stellar_download.py \
             -k 'not set_opacity and not TestTwoSectorForwardModel'
