@@ -242,8 +242,7 @@ class Plotter:
                             upper_spectrum,
                             color="#f2c8c4", zorder=2)            
         plt.plot(METRES_TO_UM * retrieval_result.best_fit_transit_dict["unbinned_wavelengths"],
-                    retrieval_result.best_fit_transit_dict["unbinned_depths"] * 
-                    retrieval_result.best_fit_transit_dict['unbinned_correction_factors'],
+                    retrieval_result.best_fit_transit_dict["unbinned_depths"],
                     color='r', label="Calculated (unbinned, unshifted)", zorder=3)
         plt.errorbar(METRES_TO_UM * retrieval_result.transit_wavelengths,
                         retrieval_result.transit_depths,
@@ -252,7 +251,8 @@ class Plotter:
         points = plt.scatter(
             METRES_TO_UM * retrieval_result.transit_wavelengths,
             retrieval_result.transit_depths,
-            c=retrieval_result["loos"], cmap="viridis",
+            c=retrieval_result["loos"][:len(retrieval_result.transit_depths)],
+            cmap="viridis",
             s=25, edgecolors='k', linewidths=0.5,
             label="Observed", zorder=6)
         plt.colorbar(points, label="LOO log predictive density", pad=0.01)
@@ -297,7 +297,8 @@ class Plotter:
         points = plt.scatter(
             METRES_TO_UM * retrieval_result.eclipse_wavelengths,
             retrieval_result.eclipse_depths,
-            c=retrieval_result["loos"], cmap="viridis",
+            c=retrieval_result["loos"][-len(retrieval_result.eclipse_depths):],
+            cmap="viridis",
             s=25, edgecolors='k', linewidths=0.5,
             label="Observed", zorder=6)
         plt.colorbar(points, label="LOO log predictive density", pad=0.01)

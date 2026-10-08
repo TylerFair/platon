@@ -83,7 +83,7 @@ class CombinedRetriever:
                     "cloud_fraction must be fixed at 1 for a "
                     "TwoSectorTerminator")
         
-        if fit_info.all_params["log_k"].best_guess is None:
+        if fit_info.all_params["n"].best_guess is None:
             # Not using Mie scattering
             if fit_info.all_params["log_number_density"].best_guess != -np.inf:
                 raise ValueError("log number density must be -inf if not using Mie scattering")            
@@ -408,8 +408,7 @@ class CombinedRetriever:
         [P, T_cold, T_hot] for 1.5-D terminator retrievals."""
         if transit_info is not None:
             retrieval_result.random_transit_depths.append(
-                transit_info["unbinned_depths"] *
-                transit_info["unbinned_correction_factors"])
+                transit_info["unbinned_depths"])
             retrieval_result.random_transit_TP_profiles.append(
                 transit_info["full_TP_profile"])
         if eclipse_info is not None:
@@ -743,7 +742,7 @@ class CombinedRetriever:
 
     def _get_divisors_labels(self, medians, labels):
         divisors = np.ones(len(labels))
-        new_labels = np.copy(labels)
+        new_labels = list(labels)
         
         for i, l in enumerate(labels):            
             if l == "Rs":
@@ -897,9 +896,11 @@ class CombinedRetriever:
                                    n_dims=num_dim, **solve_kwargs)
         a = pymultinest.Analyzer(outputfiles_basename=basename, n_params=num_dim)
         data = a.get_data()
+        result["logz"] = np.atleast_1d(result["logZ"])
         result["samples"] = data[:,2:]
-        result["logp"] = np.log(data[:,0])
         result["logl"] = -0.5 * data[:,1]
+        result["logp"] = result["logl"] + np.array(
+            [fit_info._ln_prior(params) for params in result["samples"]])
         best_params_arr = result["samples"][np.argmax(result["logp"])]
         
         equal_samples = a.get_equal_weighted_posterior()[:,:-1]

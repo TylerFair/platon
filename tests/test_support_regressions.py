@@ -65,25 +65,6 @@ def test_visualizer_layer_background_extends_to_canvas_edge():
     np.testing.assert_allclose(image[20:], 1.)
 
 
-def test_opacity_profile_uses_energy_flux_and_interpolates_to_default_grid():
-    pressure, temperature = np.array([1., 2.]), np.array([1000., 1000.])
-    density = pressure / (k_B * temperature)
-    # Choose optical-depth increment 1, with thermal cross section 2.
-    dr = 1. / (2. * density.mean())
-    info = dict(unbinned_wavelengths=np.array([1., 2., 5., 8.]) * 1e-6,
-                stellar_spectrum=np.array([1., 3., 1., 1.]),
-                planet_spectrum=np.ones(4),
-                absorption_coeff_atm=density[:, None] * np.array([1., 9., 2., 2.]),
-                radii=np.array([2. * dr, dr]), P_profile=pressure, T_profile=temperature)
-    profile = Profile.from_opacity(1000., info, visible_cutoff=3e-6, T_int=100.)
-    gamma = 7. / 2.  # Visible energy-weighted sigma=(1*1+9*3)/4=7.
-    expected4 = .75 * 100.**4 * (2/3 + 1.) + .75 * 1000.**4 * (
-        2/3 + 2/(3*gamma) * (1 + (gamma/2 - 1)*np.exp(-gamma)) +
-        2*gamma/3 * .5 * expn(2, gamma))
-    assert profile.temperatures.shape == profile.pressures.shape
-    np.testing.assert_allclose(profile.temperatures, expected4**.25)
-
-
 @pytest.mark.parametrize('kwargs', [dict(cloudtop_pressure=np.nan),
                                     dict(scattering_factor=np.nan),
                                     dict(scattering_factor=np.inf),

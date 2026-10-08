@@ -1,7 +1,7 @@
 import numpy as np
 from scipy.special import expn
 
-from .constants import k_B, G
+from .constants import G
 from .params import NUM_LAYERS, MIN_P, MAX_P
 
 
@@ -47,7 +47,6 @@ class Profile:
         Profile.parametric(T0, P1, alpha1, alpha2, P3, T3)
         Profile.guillot(T_star, Rs, a, Mp, Rp, beta, log_k_th, log_gamma)
         Profile.radiative_solution(T_star, Rs, a, Mp, Rp, beta, ...)
-        Profile.from_opacity(T_irr, info_dict)
         Profile.from_arrays(P_profile, T_profile)
         Profile.from_params_dict(profile_type, params_dict)
 
@@ -143,58 +142,6 @@ class Profile:
             T0=T0, P1=P1, alpha1=alpha1, alpha2=alpha2, P3=P3, T3=T3))
 
     @classmethod
-    def from_opacity(cls, T_irr, info_dict, visible_cutoff=0.8e-6,
-                     T_int=100):
-        wavelengths = np.asarray(info_dict["unbinned_wavelengths"],
-                                 dtype=np.float64)
-        d_lambda = np.diff(wavelengths)
-        d_lambda = np.append(d_lambda[0], d_lambda)
-
-        # Calculator spectra are both energy flux densities (W m^-2 m^-1).
-        # Integrate each sampled wavelength interval for opacity weighting.
-        stellar_spectrum = np.asarray(info_dict["stellar_spectrum"],
-                                      dtype=np.float64) * d_lambda
-
-        # Convert planetary spectrum from energy/time/wavelength to energy/time
-        planet_spectrum = np.asarray(info_dict["planet_spectrum"],
-                                     dtype=np.float64) * d_lambda
-        absorption_coeffs = np.asarray(info_dict["absorption_coeff_atm"],
-                                       dtype=np.float64)
-        radii = np.asarray(info_dict["radii"], dtype=np.float64)
-
-        # Equation 49 here: https://arxiv.org/pdf/1006.4702.pdf
-        visible = wavelengths < visible_cutoff
-        thermal = wavelengths >= visible_cutoff
-        n = np.asarray(info_dict["P_profile"], dtype=np.float64) / k_B / \
-            np.asarray(info_dict["T_profile"], dtype=np.float64)
-        intermediate_n = (n[0:-1] + n[1:]) / 2.0
-        sigmas = absorption_coeffs / n[:, np.newaxis]
-        sigma_v = np.median(np.average(sigmas[:, visible], axis=1,
-                                       weights=stellar_spectrum[visible]))
-        sigma_th = np.median(np.average(sigmas[:, thermal], axis=1,
-                                        weights=planet_spectrum[thermal]))
-
-        gamma = sigma_v / sigma_th
-
-        dr = -np.diff(radii)
-        d_taus = sigma_th * intermediate_n * dr
-        taus = np.cumsum(d_taus)
-
-        e2 = expn(2, gamma * taus)
-        T4 = 3.0 / 4 * T_int**4 * (2.0 / 3 + taus) + \
-            3.0 / 4 * T_irr**4 * (2.0 / 3 + 2.0 / 3 / gamma *
-                                  (1 + (gamma * taus / 2 - 1) * np.exp(-gamma * taus)) +
-                                  2.0 * gamma / 3 * (1 - taus**2 / 2) * e2)
-        T = T4 ** 0.25
-        # info_dict describes the layers of the profile it was computed from,
-        # which need not be the default pressure grid
-        temperatures = np.interp(
-            np.log10(_default_pressures()), np.log10(info_dict["P_profile"]),
-            np.append(T[0], T))
-        return cls._parameterized(temperatures, "opacity",
-                                  dict(T_irr=T_irr, T_int=T_int))
-
-    @classmethod
     def guillot(cls, T_star, Rs, a, Mp, Rp, beta, log_k_th, log_gamma,
                 T_int=100):
         """The one-visible-channel profile from Guillot (2010).  As in
@@ -215,6 +162,8 @@ class Profile:
                            alpha=0, T_int=100, **ignored_kwargs):
         '''From Line et al. 2013: http://adsabs.harvard.edu/abs/2013ApJ...775..137L, Equation 13 - 16.'''
 
+        if log_gamma2 is None and alpha != 0:
+            raise ValueError("log_gamma2 must be given when alpha != 0")
         T4 = _radiative_solution_T4(T_star, Rs, a, Mp, Rp, beta, log_k_th,
                                     log_gamma, log_gamma2, alpha, T_int,
                                     _default_pressures())

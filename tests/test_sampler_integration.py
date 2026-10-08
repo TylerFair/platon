@@ -62,7 +62,8 @@ def _sampler_stubs(fit_info):
 
     def solve(LogLikelihood, Prior, n_dims, **kwargs):
         evaluate(Prior, LogLikelihood)
-        return {"logz": np.array([-12.5])}
+        # pymultinest.solve's result: logZ, logZerr and samples
+        return {"logZ": -12.5, "logZerr": 0.1}
 
     class Analyzer:
         def __init__(self, **kwargs):
@@ -210,7 +211,8 @@ def test_posterior_reconstruction_recovers_pointwise_cache_misses():
         retriever._collect_random_samples(
             result, [[0.1]], 1, None, None, None, None, None, None, None, ["H2O"])
     np.testing.assert_array_equal(result.pointwise_lnlikes, [pointwise])
-    np.testing.assert_allclose(result.random_transit_depths, [[0.011, 0.024]])
+    # unbinned_depths are already TLS-corrected (upstream a839ab2)
+    np.testing.assert_allclose(result.random_transit_depths, [[0.01, 0.02]])
 
 
 def test_old_fit_info_uses_stellar_and_temperature_validation_defaults():
