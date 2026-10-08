@@ -4,8 +4,11 @@ import warnings
 import numpy as np
 from ._params import _UniformParam, _GaussianParam, _Param
 
-# Older parameter names, still accepted when choosing what to fit
-_RENAMED = {"T_spot": "T_het", "spot_cov_frac": "f_het"}
+# Older parameter names, still accepted when choosing what to fit.  Two-sector
+# retrievals now sample unordered sectors and label them cold/hot afterwards.
+_RENAMED = {"T_spot": "T_het", "spot_cov_frac": "f_het",
+            "cold_fraction": "sector1.fraction"}
+_RENAMED_PREFIXES = {"cold.": "sector1.", "hot.": "sector2."}
 
 
 class FitInfo:
@@ -21,6 +24,9 @@ class FitInfo:
         """Returns the name under which `name` is stored, translating older
         names; raises a KeyError suggesting close matches if it is unknown."""
         new_name = _RENAMED.get(name)
+        for old_prefix, new_prefix in _RENAMED_PREFIXES.items():
+            if name.startswith(old_prefix):
+                new_name = new_prefix + name[len(old_prefix):]
         if name not in self.all_params and new_name in self.all_params:
             warnings.warn("{} has been renamed {}".format(name, new_name),
                           DeprecationWarning, stacklevel=3)

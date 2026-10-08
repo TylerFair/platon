@@ -28,9 +28,33 @@ class TerminatorSector:
             raise ValueError("scattering_slope must be finite")
 
 
+# Retrievals sample the two sectors under these neutral names, then label
+# each posterior sample's colder sector "cold" (see label_by_temperature)
+SECTOR_LABELS = ("sector1", "sector2")
+SECTOR_FRACTION = "sector1.fraction"
+# Sectors are compared by their mean temperature over the layers between
+# 0.1 mbar and 1 bar (Pa), roughly where transmission spectra are formed
+COMPARISON_PRESSURES = (1e1, 1e5)
+
+
+def sector_temperature(profile):
+    """Mean temperature (K) of a profile between 0.1 mbar and 1 bar.  The
+    default pressure grid is log-spaced, so this is a mean in log pressure."""
+    pressures = np.asarray(profile.pressures)
+    temperatures = np.asarray(profile.temperatures)
+    low, high = COMPARISON_PRESSURES
+    probed = (pressures >= low) & (pressures <= high)
+    if not np.any(probed):
+        return float(np.interp(np.log(np.sqrt(low * high)), np.log(pressures),
+                               temperatures))
+    return float(np.mean(temperatures[probed]))
+
+
 @dataclass(frozen=True)
 class TwoSectorTerminator:
-    """A cold and hot terminator sector combined by projected area."""
+    """A cold and hot terminator sector combined by projected area.  The cold
+    sector is the one with the lower mean temperature between 0.1 mbar and
+    1 bar (see sector_temperature)."""
 
     cold: TerminatorSector
     hot: TerminatorSector
@@ -50,10 +74,11 @@ class TwoSectorTerminator:
                 "cold and hot profiles must use the same isothermal or "
                 "Guillot parameterization")
 
-        order_name = "T" if kind == "isothermal" else "beta"
-        if self.cold.profile.profile_params[order_name] > \
-           self.hot.profile.profile_params[order_name]:
-            raise ValueError("cold profile must not be hotter than hot profile")
+        if sector_temperature(self.cold.profile) > \
+           sector_temperature(self.hot.profile):
+            raise ValueError(
+                "cold profile must not be hotter than hot profile (compared "
+                "by mean temperature between 0.1 mbar and 1 bar)")
 
         if kind == "guillot":
             for name in GUILLOT_SHARED_PARAMS:
@@ -68,16 +93,20 @@ class TwoSectorTerminator:
         return self.cold.profile.profile_type
 
     @property
-    def order_parameter(self):
-        return "T" if self.profile_type == "isothermal" else "beta"
+    def sector_parameters(self):
+        """Names of the parameters each sector has its own value of."""
+        profile = ("T",) if self.profile_type == "isothermal" else \
+            ("beta", "log_gamma")
+        return profile + ("log_cloudtop_P", "log_scatt_factor", "scatt_slope")
 
     def retrieval_defaults(self):
-        """Return the named values used to reconstruct this terminator."""
+        """Return the named values used to reconstruct this terminator: the
+        cold sector as sector1 and the hot one as sector2."""
         values = {
             "transit_terminator": self,
-            "cold_fraction": self.cold_fraction,
+            SECTOR_FRACTION: self.cold_fraction,
         }
-        for label, sector in (("cold", self.cold), ("hot", self.hot)):
+        for label, sector in zip(SECTOR_LABELS, (self.cold, self.hot)):
             values[f"{label}.log_cloudtop_P"] = np.log10(
                 sector.cloudtop_pressure)
             values[f"{label}.log_scatt_factor"] = np.log10(
@@ -96,13 +125,13 @@ class TwoSectorTerminator:
                 values[name] = self.cold.profile.profile_params[name]
         return values
 
-    def from_params(self, params):
-        """Build a terminator from a retrieval parameter dictionary.  Guillot
-        sectors take T_star, Rs, a, Mp, Rp, log_k_th, and T_int from params,
-        and beta and log_gamma from the sector-prefixed names (e.g.
-        cold.beta)."""
+    def sectors_from_params(self, params):
+        """The (sector1, sector2) TerminatorSectors of a retrieval parameter
+        dictionary, in sampling order.  Guillot sectors take T_star, Rs, a,
+        Mp, Rp, log_k_th, and T_int from params, and beta and log_gamma from
+        the sector-prefixed names (e.g. sector1.beta)."""
         sectors = []
-        for label in ("cold", "hot"):
+        for label in SECTOR_LABELS:
             if self.profile_type == "isothermal":
                 profile = Profile.isothermal(params[f"{label}.T"])
             else:
@@ -118,6 +147,73 @@ class TwoSectorTerminator:
                 10**params[f"{label}.log_cloudtop_P"],
                 10**params[f"{label}.log_scatt_factor"],
                 params[f"{label}.scatt_slope"]))
+        return sectors
 
-        return TwoSectorTerminator(
-            sectors[0], sectors[1], params["cold_fraction"])
+    def _sector1_is_hotter(self, sectors):
+        return sector_temperature(sectors[0].profile) > \
+            sector_temperature(sectors[1].profile)
+
+    def from_params(self, params):
+        """Build a terminator from a retrieval parameter dictionary, with
+        whichever of sector1 and sector2 is colder as the cold sector."""
+        sectors = self.sectors_from_params(params)
+        fraction = params[SECTOR_FRACTION]
+        if self._sector1_is_hotter(sectors):
+            return TwoSectorTerminator(sectors[1], sectors[0], 1 - fraction)
+        return TwoSectorTerminator(sectors[0], sectors[1], fraction)
+
+    def labelled_values(self, params):
+        """The sector parameters of a retrieval parameter dictionary named
+        by temperature: cold.<name> and hot.<name> for each name in
+        sector_parameters, and cold_fraction.  All of a sector's parameters
+        move together, so each sample stays self-consistent."""
+        swap = self._sector1_is_hotter(self.sectors_from_params(params))
+        cold, hot = SECTOR_LABELS[::-1] if swap else SECTOR_LABELS
+        values = {"{}.{}".format(new, name): params["{}.{}".format(old, name)]
+                  for new, old in (("cold", cold), ("hot", hot))
+                  for name in self.sector_parameters}
+        fraction = params[SECTOR_FRACTION]
+        values["cold_fraction"] = 1 - fraction if swap else fraction
+        return values
+
+
+def label_by_temperature(fit_info, samples):
+    """Posterior samples with the two sectors named by temperature.
+
+    Two-sector retrievals sample sector1 and sector2 with independent priors
+    and no ordering.  For every sample, this names the sector with the lower
+    mean temperature between 0.1 mbar and 1 bar "cold" and the other "hot",
+    moving all of that sector's parameters (and its share of the terminator,
+    which becomes cold_fraction) with it.  This post-hoc relabelling is the
+    usual remedy for label switching in mixture models (e.g. Stephens 2000,
+    J. R. Stat. Soc. B 62, 795).
+
+    Returns (names, array); a fit without a terminator is returned as is.
+    If only one sector of a parameter is fitted, both labelled versions are
+    included, since the fixed value can belong to either.
+    """
+    samples = np.atleast_2d(np.asarray(samples, dtype=np.float64))
+    names = list(fit_info.fit_param_names)
+    param = fit_info.all_params.get("transit_terminator")
+    terminator = None if param is None else param.best_guess
+    if terminator is None:
+        return names, samples
+
+    per_sector = {"{}.{}".format(label, name): name for label in SECTOR_LABELS
+                  for name in terminator.sector_parameters}
+    labelled = []
+    for name in names:
+        if name in per_sector:
+            for new in ("cold.", "hot."):
+                if new + per_sector[name] not in labelled:
+                    labelled.append(new + per_sector[name])
+        elif name == SECTOR_FRACTION:
+            labelled.append("cold_fraction")
+        else:
+            labelled.append(name)
+    result = np.empty((len(samples), len(labelled)))
+    for i, row in enumerate(samples):
+        params = fit_info._interpret_param_array(row)
+        params.update(terminator.labelled_values(params))
+        result[i] = [params[name] for name in labelled]
+    return labelled, result

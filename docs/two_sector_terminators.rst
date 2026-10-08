@@ -88,9 +88,12 @@ shared by the two sectors, while ``beta`` and ``log_gamma`` may differ::
       TerminatorSector(hot_profile, cloudtop_pressure=1e6),
       cold_fraction=0.5)
 
-For a Guillot model, cold and hot refer to the ordering of ``beta``.  The
-temperature profiles can cross at some pressures when their ``log_gamma``
-values differ.
+Cold and hot are defined by temperature: the cold sector is the one with
+the lower mean temperature between 0.1 mbar and 1 bar, roughly where
+transmission spectra form
+(:func:`~platon.terminator.sector_temperature`).  Guillot profiles can cross
+when their ``log_gamma`` values differ, so the sector with the larger
+``beta`` is not necessarily the hot one.
 
 Bonus: quench pressure
 ======================
@@ -129,9 +132,10 @@ Retrieving two sectors
 ======================
 
 Pass the terminator to
-:func:`.CombinedRetriever.get_default_fit_info`.  Temperatures use an ordered
-pair of uniform priors.  This treats both original temperature draws in the
-same way, then labels the lower one cold::
+:func:`.CombinedRetriever.get_default_fit_info`.  Its two sectors are added
+to the fit under neutral names, ``sector1`` (from the template's cold sector)
+and ``sector2`` (from its hot one), plus ``sector1.fraction``, the share of the
+terminator in sector 1.  Give both sectors the same, independent priors::
 
   from platon.combined_retriever import CombinedRetriever
 
@@ -141,39 +145,64 @@ same way, then labels the lower one cold::
       logZ=0, CO_ratio=0.53, T_star=6100,
       transit_terminator=terminator)
 
-  fit_info.add_ordered_uniform_fit_params(
-      "cold.T", "hot.T", 500, 2500)
-  fit_info.add_uniform_fit_param("cold.log_cloudtop_P", -0.99, 7)
-  fit_info.add_uniform_fit_param("hot.log_cloudtop_P", -0.99, 7)
-  fit_info.add_uniform_fit_param("cold.log_scatt_factor", -2, 6)
-  fit_info.add_uniform_fit_param("hot.log_scatt_factor", -2, 6)
-  fit_info.add_uniform_fit_param("cold.scatt_slope", 0, 12)
-  fit_info.add_uniform_fit_param("hot.scatt_slope", 0, 12)
+  for sector in ("sector1", "sector2"):
+      fit_info.add_uniform_fit_param(sector + ".T", 300, 3000)
+      fit_info.add_uniform_fit_param(sector + ".log_cloudtop_P", -0.99, 7)
+      fit_info.add_uniform_fit_param(sector + ".log_scatt_factor", -2, 6)
+      fit_info.add_uniform_fit_param(sector + ".scatt_slope", 0, 12)
 
   result = retriever.run_dynesty(
       bins, depths, errors,
       None, None, None,
       fit_info)
 
+The sampler does not order the sectors, so every sample of ``sector1``
+is equally likely to be the colder one, and the posterior has two
+mirror-image modes.  Afterwards, PLATON names each sample's colder sector
+``cold`` and the other ``hot``, moving all of that sector's parameters with
+it: ``cold.T``, ``cold.log_cloudtop_P``, ``cold.log_scatt_factor``, ... always
+describe one and the same sector, and ``sector1.fraction`` becomes
+``cold_fraction``.  The corner plot and ``BestFit.txt`` use these names, and
+:func:`~platon.terminator.label_by_temperature` returns the relabelled
+samples::
+
+  from platon.terminator import label_by_temperature
+
+  names, samples = label_by_temperature(result.fit_info, result.equal_samples)
+
+Relabelling after sampling is the usual remedy for this kind of label
+switching (e.g. Stephens 2000).  It keeps each prior uniform over its whole
+range: there is no centre and contrast whose implied prior on the two
+temperatures is non-uniform, and no sample is discarded for being in the
+"wrong" order.  Because a combined transmission spectrum cannot tell which
+sector is the morning or the evening limb, the sectors are named by
+temperature rather than by side, unlike codes that fit limb-resolved light
+curves (e.g. the ``_east``/``_west`` parameters of
+`Exo_Skryer <https://github.com/ELeeAstro/Exo_Skryer>`_).
+
 In this example the fraction stays fixed at its initial value of 0.5.  To fit
 it freely, add one more uniform prior before running the retrieval::
 
-  fit_info.add_uniform_fit_param("cold_fraction", 0, 1)
+  fit_info.add_uniform_fit_param("sector1.fraction", 0, 1)
 
 The fraction prior is uniform in projected area.  The cloud and haze priors
 above are independent and have the same limits on both sectors.
 
-For a Guillot retrieval, replace the ordered temperature names with
-``cold.beta`` and ``hot.beta``.  The shared ``T_star``, ``Rs``, ``a``,
-``Mp``, and ``Rp`` are taken from the terminator; any of these also passed
-to ``get_default_fit_info`` must agree with it.  The other profile
-parameters are ordinary uniform fit parameters::
+For a Guillot retrieval, fit ``sector1.beta`` and ``sector2.beta`` instead of
+the temperatures.  The shared ``T_star``, ``Rs``, ``a``, ``Mp``, and ``Rp``
+are taken from the terminator; any of these also passed to
+``get_default_fit_info`` must agree with it.  The other profile parameters
+are ordinary uniform fit parameters::
 
-  fit_info.add_ordered_uniform_fit_params(
-      "cold.beta", "hot.beta", 0.4, 1.8)
-  fit_info.add_uniform_fit_param("cold.log_gamma", -3, 1)
-  fit_info.add_uniform_fit_param("hot.log_gamma", -3, 1)
+  for sector in ("sector1", "sector2"):
+      fit_info.add_uniform_fit_param(sector + ".beta", 0.4, 1.8)
+      fit_info.add_uniform_fit_param(sector + ".log_gamma", -3, 1)
   fit_info.add_uniform_fit_param("log_k_th", -5, 0)
+
+Scripts written for earlier versions, which fitted ``cold.T`` and ``hot.T``
+with ``add_ordered_uniform_fit_params`` and ``cold_fraction``, still work:
+those names are translated to ``sector1.T``, ``sector2.T``, and
+``sector1.fraction``, with a deprecation warning.
 
 The standard spectrum and corner plots work with a 1.5-D result.  The
 temperature-profile plot draws the cold and hot posterior regions separately::

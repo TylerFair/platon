@@ -16,7 +16,8 @@ from ._params import _UniformParam
 from .errors import AtmosphereError
 from ._output_writer import write_param_estimates_file
 from .TP_profile import Profile
-from .terminator import TwoSectorTerminator
+from .terminator import (TwoSectorTerminator, SECTOR_LABELS,
+                         SECTOR_FRACTION, label_by_temperature)
 from .retrieval_result import RetrievalResult
 from .custom_dynesty_result import CustomDynestyResult
 
@@ -121,8 +122,8 @@ class CombinedRetriever:
             best = [fit_info.all_params[name].best_guess
                     for name in fit_info.fit_param_names]
             params = fit_info._interpret_param_array(best)
-            rebuilt = terminator.from_params(params)
-            for sector in (rebuilt.cold, rebuilt.hot):
+            sectors = terminator.sectors_from_params(params)
+            for sector in sectors:
                 calculator._validate_params(
                     sector.profile.temperatures, params["logZ"],
                     params["CO_ratio"], sector.cloudtop_pressure,
@@ -132,12 +133,11 @@ class CombinedRetriever:
                 if not isinstance(param, _UniformParam):
                     continue
                 if name not in (
-                        "logZ", "CO_ratio", "cold.log_cloudtop_P",
-                        "hot.log_cloudtop_P"):
+                        "logZ", "CO_ratio", "sector1.log_cloudtop_P",
+                        "sector2.log_cloudtop_P"):
                     continue
                 for limit in (param.low_lim, param.high_lim):
-                    for label, sector in (
-                            ("cold", rebuilt.cold), ("hot", rebuilt.hot)):
+                    for label, sector in zip(SECTOR_LABELS, sectors):
                         logZ = limit if name == "logZ" else params["logZ"]
                         ratio = limit if name == "CO_ratio" else \
                             params["CO_ratio"]
@@ -239,11 +239,9 @@ class CombinedRetriever:
         if cloud_fraction < 0 or cloud_fraction > 1:
             return -np.inf
         if transit_terminator is not None:
-            if cloud_fraction != 1:
-                return -np.inf
-            order_name = transit_terminator.order_parameter
-            if params_dict[f"cold.{order_name}"] > \
-               params_dict[f"hot.{order_name}"]:
+            # The sectors are unordered; from_params labels the colder one
+            if cloud_fraction != 1 or \
+               not 0 <= params_dict[SECTOR_FRACTION] <= 1:
                 return -np.inf
 
         if params_dict["fit_vmr"]:
@@ -679,15 +677,9 @@ class CombinedRetriever:
         best_params_arr = sampler.flatchain[np.argmax(
             sampler.flatlnprobability)]
         
-        divisors, new_labels = self._get_divisors_labels(
-            np.median(sampler.flatchain, axis=0),
-            fit_info.fit_param_names)
-        
-        write_param_estimates_file(
-            sampler.flatchain / divisors,
-            best_params_arr / divisors,
-            np.max(sampler.flatlnprobability),
-            new_labels)
+        divisors, new_labels = self._write_estimates(
+            fit_info, sampler.flatchain, best_params_arr,
+            np.max(sampler.flatlnprobability))
 
         best_fit_transit_depths, best_fit_transit_info, best_fit_eclipse_depths, best_fit_eclipse_info = self._ln_like(
             best_params_arr, transit_calc, eclipse_calc, fit_info,
@@ -714,6 +706,17 @@ class CombinedRetriever:
             transit_depths, transit_errors, eclipse_depths, eclipse_errors,
             zero_opacities)
         return retrieval_result
+
+    def _write_estimates(self, fit_info, samples, best_params, best_lnprob):
+        """Write BestFit.txt, with two-sector parameters labelled cold and
+        hot by temperature.  Returns the divisors and labels of its columns."""
+        names, samples = label_by_temperature(fit_info, samples)
+        _, best = label_by_temperature(fit_info, [best_params])
+        divisors, labels = self._get_divisors_labels(
+            np.median(samples, axis=0), names)
+        write_param_estimates_file(
+            samples / divisors, best[0] / divisors, best_lnprob, labels)
+        return divisors, labels
 
     def _get_divisors_labels(self, medians, labels):
         divisors = np.ones(len(labels))
@@ -812,15 +815,8 @@ class CombinedRetriever:
         equal_samples = dynesty.utils.resample_equal(result.samples, result.weights)
         np.random.shuffle(equal_samples)
 
-        divisors, new_labels = self._get_divisors_labels(
-            np.median(equal_samples, axis=0),
-            fit_info.fit_param_names)
-        
-        write_param_estimates_file(
-            equal_samples / divisors,
-            best_params_arr / divisors,
-            np.max(result.logp),
-            new_labels)
+        divisors, new_labels = self._write_estimates(
+            fit_info, equal_samples, best_params_arr, np.max(result.logp))
         
         best_fit_transit_depths, best_fit_transit_info, best_fit_eclipse_depths, best_fit_eclipse_info = self._ln_like(
             best_params_arr, transit_calc, eclipse_calc, fit_info,
@@ -887,15 +883,8 @@ class CombinedRetriever:
         np.random.shuffle(equal_samples)
         result["equal_samples"] = equal_samples
         
-        divisors, new_labels = self._get_divisors_labels(
-            np.median(equal_samples, axis=0),
-            fit_info.fit_param_names)
-        
-        write_param_estimates_file(
-            equal_samples / divisors,
-            best_params_arr / divisors,
-            np.max(result["logp"]),
-            new_labels)
+        divisors, new_labels = self._write_estimates(
+            fit_info, equal_samples, best_params_arr, np.max(result["logp"]))
 
         best_fit_transit_depths, best_fit_transit_info, best_fit_eclipse_depths, best_fit_eclipse_info = self._ln_like(
             best_params_arr,
@@ -972,11 +961,8 @@ class CombinedRetriever:
 
         equal_samples = dynesty.utils.resample_equal(samples, weights)
         np.random.shuffle(equal_samples)
-        divisors, new_labels = self._get_divisors_labels(
-            np.median(equal_samples, axis=0), fit_info.fit_param_names)
-        write_param_estimates_file(
-            equal_samples / divisors, best_params_arr / divisors,
-            np.max(logp), new_labels)
+        divisors, new_labels = self._write_estimates(
+            fit_info, equal_samples, best_params_arr, np.max(logp))
 
         best = self._ln_like(
             best_params_arr, transit_calc, eclipse_calc, fit_info,
@@ -1118,7 +1104,13 @@ class CombinedRetriever:
             temperature is T_transit, falling back to T.
         transit_terminator : TwoSectorTerminator, optional
             A cold and hot terminator template for a 1.5-D transit retrieval.
-            Its named sector values are added to the returned FitInfo.  For
+            Its sector values are added to the returned FitInfo under neutral
+            names, sector1.<name> (from the cold template) and
+            sector2.<name> (from the hot one), plus sector1.fraction.  Fit
+            both sectors with the same independent priors, e.g.
+            add_uniform_fit_param("sector1.T", 300, 3000) and likewise for
+            sector2.T; the results name each sample's colder sector "cold"
+            (see :func:`~platon.terminator.label_by_temperature`).  For
             Guillot sectors, the shared T_star, Rs, a, Mp, Rp, log_k_th, and
             T_int are taken from the template; any of these also passed here
             must agree with it.

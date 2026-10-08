@@ -4,6 +4,7 @@ import corner
 from .constants import METRES_TO_UM, BAR_TO_PASCALS, R_jup
 from .retrieval_result import RetrievalResult
 from . TP_profile import Profile
+from .terminator import label_by_temperature
 import numpy as _np
 import dynesty
 
@@ -201,8 +202,7 @@ class Plotter:
         posteriors of the fitted parameters.
         """
         assert(isinstance(retrieval_result, RetrievalResult))
-        # Defaults; explicit keyword arguments (e.g. labels) override them
-        options = dict(labels=retrieval_result.fit_info.fit_param_names)
+        options = {}
         if retrieval_result.retrieval_type in ("dynesty", "nautilus"):
             samples = retrieval_result.samples
             options.update(weights=retrieval_result.weights, show_titles=True)
@@ -213,7 +213,10 @@ class Plotter:
             samples = retrieval_result.flatchain
         else:
             assert(False)
-        options["range"] = [0.99] * samples.shape[1]
+        # Two-sector parameters are shown as cold and hot, by temperature
+        names, samples = label_by_temperature(retrieval_result.fit_info, samples)
+        # Defaults; explicit keyword arguments (e.g. labels) override them
+        options.update(labels=names, range=[0.99] * samples.shape[1])
         options.update(args)
         fig = corner.corner(samples, **options)
 

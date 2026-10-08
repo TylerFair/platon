@@ -5,7 +5,8 @@ from scipy.special import expn
 
 from platon.constants import AU, G, M_jup, R_jup, R_sun
 from platon.fit_info import FitInfo
-from platon.terminator import TerminatorSector, TwoSectorTerminator
+from platon.terminator import (TerminatorSector, TwoSectorTerminator,
+                               sector_temperature)
 from platon.TP_profile import Profile
 from platon.transit_depth_calculator import TransitDepthCalculator
 
@@ -60,10 +61,9 @@ class TestTwoSectorTypes(unittest.TestCase):
         model = TwoSectorTerminator(
             TerminatorSector(guillot(0.9, -1.2), 1e3),
             TerminatorSector(guillot(1.25, -0.6), 1e6), 0.4)
-        self.assertEqual(model.order_parameter, "beta")
         defaults = model.retrieval_defaults()
-        self.assertEqual(defaults["cold.beta"], 0.9)
-        self.assertEqual(defaults["hot.beta"], 1.25)
+        self.assertEqual(defaults["sector1.beta"], 0.9)
+        self.assertEqual(defaults["sector2.beta"], 1.25)
         self.assertEqual(defaults["a"], A_ORBIT)
 
         rebuilt = model.from_params(defaults)
@@ -72,7 +72,8 @@ class TestTwoSectorTypes(unittest.TestCase):
             np.testing.assert_array_equal(
                 sector.profile.temperatures, original.profile.temperatures)
 
-        # Cold and hot are ordered by beta, and must share the star and orbit
+        # Cold and hot are ordered by mean temperature, and must share the
+        # star and orbit
         with self.assertRaises(ValueError):
             TwoSectorTerminator(TerminatorSector(guillot(1.25, -1)),
                                 TerminatorSector(guillot(0.9, -1)))
@@ -88,8 +89,9 @@ class TestTwoSectorTypes(unittest.TestCase):
         defaults = model.retrieval_defaults()
         rebuilt = model.from_params(defaults)
 
-        self.assertEqual(defaults["cold.T"], 900)
-        self.assertEqual(defaults["hot.T"], 1400)
+        self.assertEqual(defaults["sector1.T"], 900)
+        self.assertEqual(defaults["sector2.T"], 1400)
+        self.assertEqual(defaults["sector1.fraction"], 0.4)
         self.assertEqual(rebuilt.cold_fraction, 0.4)
         self.assertEqual(rebuilt.cold.cloudtop_pressure, 1e3)
         self.assertEqual(rebuilt.hot.scattering_factor, 0.1)
@@ -106,7 +108,7 @@ class TestTwoSectorTypes(unittest.TestCase):
             TerminatorSector(isothermal(1400)))
         fit_info = FitInfo(model.retrieval_defaults())
         fit_info.add_ordered_uniform_fit_params(
-            "cold.T", "hot.T", 500, 2000)
+            "sector1.T", "sector2.T", 500, 2000)
 
         transformed = fit_info._from_unit_interval_array([0.9, 0.1])
         self.assertLess(transformed[0], transformed[1])
@@ -122,16 +124,89 @@ class TestTwoSectorTypes(unittest.TestCase):
             TerminatorSector(isothermal(1400), 1e6, 1, 4))
         fit_info = CombinedRetriever.get_default_fit_info(
             R_sun, M_jup, R_jup, T=None, transit_terminator=model)
-        fit_info.add_ordered_uniform_fit_params(
-            "cold.T", "hot.T", 500, 2000)
-        fit_info.add_uniform_fit_param("cold_fraction", 0, 1)
+        fit_info.add_uniform_fit_param("sector1.T", 500, 2000)
+        fit_info.add_uniform_fit_param("sector2.T", 500, 2000)
+        fit_info.add_uniform_fit_param("sector1.fraction", 0, 1)
 
         self.assertIs(
             fit_info.all_params["transit_terminator"].best_guess, model)
-        self.assertEqual(
-            fit_info.ordered_pairs, [("cold.T", "hot.T")])
-        self.assertIn("cold.log_cloudtop_P", fit_info.all_params)
-        self.assertIn("hot.log_scatt_factor", fit_info.all_params)
+        self.assertIn("sector1.log_cloudtop_P", fit_info.all_params)
+        self.assertIn("sector2.log_scatt_factor", fit_info.all_params)
+        self.assertNotIn("cold.T", fit_info.all_params)
+
+    def test_old_cold_and_hot_names_still_work(self):
+        model = TwoSectorTerminator(
+            TerminatorSector(isothermal(900)), TerminatorSector(isothermal(1400)))
+        fit_info = FitInfo(model.retrieval_defaults())
+        with self.assertWarns(DeprecationWarning):
+            fit_info.add_ordered_uniform_fit_params("cold.T", "hot.T", 500, 2000)
+        with self.assertWarns(DeprecationWarning):
+            fit_info.add_uniform_fit_param("cold_fraction", 0, 1)
+        self.assertEqual(fit_info.fit_param_names,
+                         ["sector1.T", "sector2.T", "sector1.fraction"])
+
+    def test_from_params_labels_the_colder_sector_cold(self):
+        model = TwoSectorTerminator(
+            TerminatorSector(isothermal(900), 1e3, 10, 6),
+            TerminatorSector(isothermal(1400), 1e6, 0.1, 2), 0.3)
+        params = model.retrieval_defaults()
+        # sector1 hotter than sector2: the whole sector moves, with its share
+        params.update({"sector1.T": 1600., "sector2.T": 800.})
+        rebuilt = model.from_params(params)
+        self.assertEqual(rebuilt.cold.profile.profile_params["T"], 800.)
+        self.assertEqual(rebuilt.cold.cloudtop_pressure, 1e6)
+        self.assertEqual(rebuilt.cold.scattering_factor, 0.1)
+        self.assertEqual(rebuilt.hot.cloudtop_pressure, 1e3)
+        self.assertAlmostEqual(rebuilt.cold_fraction, 0.7)
+        values = model.labelled_values(params)
+        self.assertEqual(values["cold.T"], 800.)
+        self.assertEqual(values["cold.log_cloudtop_P"], 6)
+        self.assertEqual(values["hot.scatt_slope"], 6)
+        self.assertAlmostEqual(values["cold_fraction"], 0.7)
+
+    def test_guillot_sectors_are_compared_by_temperature_not_beta(self):
+        # Higher beta, but a larger log_gamma deposits the starlight higher
+        # up: cooler where the transmission spectrum forms, so it is the
+        # cold sector
+        low_beta, high_beta = guillot(1.0, -2.5), guillot(1.05, 0.5)
+        self.assertGreater(sector_temperature(low_beta),
+                           sector_temperature(high_beta))
+        model = TwoSectorTerminator(TerminatorSector(high_beta),
+                                    TerminatorSector(low_beta))
+        params = model.retrieval_defaults()
+        params.update({"sector1.beta": 1.0, "sector1.log_gamma": -2.5,
+                       "sector2.beta": 1.05, "sector2.log_gamma": 0.5})
+        self.assertEqual(model.labelled_values(params)["cold.beta"], 1.05)
+        self.assertEqual(model.labelled_values(params)["cold.log_gamma"], 0.5)
+        with self.assertRaises(ValueError):
+            TwoSectorTerminator(TerminatorSector(low_beta),
+                                TerminatorSector(high_beta))
+
+    def test_samples_are_labelled_by_temperature(self):
+        from platon.combined_retriever import CombinedRetriever
+        from platon.terminator import label_by_temperature
+        model = TwoSectorTerminator(
+            TerminatorSector(isothermal(900), 1e3),
+            TerminatorSector(isothermal(1400), 1e6))
+        fit_info = CombinedRetriever.get_default_fit_info(
+            R_sun, M_jup, R_jup, T=None, transit_terminator=model)
+        for name in ("sector1.T", "sector2.T"):
+            fit_info.add_uniform_fit_param(name, 300, 3000)
+        fit_info.add_uniform_fit_param("sector1.log_cloudtop_P", -0.99, 7)
+        fit_info.add_uniform_fit_param("sector1.fraction", 0, 1)
+        fit_info.add_uniform_fit_param("Rp", 0.9 * R_jup, 1.1 * R_jup)
+        samples = np.array([[800., 2000., 2., .2, R_jup],
+                            [2500., 1000., 4., .9, R_jup]])
+        names, labelled = label_by_temperature(fit_info, samples)
+        # sector2.log_cloudtop_P is fixed at 6, but can belong to either
+        self.assertEqual(names, ["cold.T", "hot.T", "cold.log_cloudtop_P",
+                                 "hot.log_cloudtop_P", "cold_fraction", "Rp"])
+        np.testing.assert_allclose(labelled, [[800., 2000., 2., 6., .2, R_jup],
+                                              [1000., 2500., 6., 4., .1, R_jup]])
+        # Fits without a terminator are unchanged
+        plain = CombinedRetriever.get_default_fit_info(R_sun, M_jup, R_jup, T=1000)
+        plain.add_uniform_fit_param("T", 300, 3000)
+        self.assertEqual(label_by_temperature(plain, [[1000.]])[0], ["T"])
 
 
 class TestTwoSectorForwardModel(unittest.TestCase):
@@ -242,10 +317,10 @@ class TestTwoSectorForwardModel(unittest.TestCase):
             fit_info = retriever.get_default_fit_info(
                 self.Rs, self.Mp, self.Rp, T=None,
                 transit_terminator=model)
-            fit_info.add_ordered_uniform_fit_params(
-                "cold.T", "hot.T", 500, 2000)
+            fit_info.add_uniform_fit_param("sector1.T", 500, 2000)
+            fit_info.add_uniform_fit_param("sector2.T", 500, 2000)
             if fit_fraction:
-                fit_info.add_uniform_fit_param("cold_fraction", 0, 1)
+                fit_info.add_uniform_fit_param("sector1.fraction", 0, 1)
             retriever._validate_params(fit_info, self.calculator)
             params = np.array([
                 fit_info.all_params[name].best_guess
@@ -275,9 +350,9 @@ class TestTwoSectorForwardModel(unittest.TestCase):
             self.Rs, self.Mp, self.Rp, T=None, transit_terminator=model)
         self.assertEqual(fit_info._get("T_star"), T_STAR)
         self.assertEqual(fit_info._get("a"), A_ORBIT)
-        fit_info.add_ordered_uniform_fit_params(
-            "cold.beta", "hot.beta", 0.5, 1.5)
-        fit_info.add_uniform_fit_param("cold.log_gamma", -3, 1)
+        fit_info.add_uniform_fit_param("sector1.beta", 0.5, 1.5)
+        fit_info.add_uniform_fit_param("sector2.beta", 0.5, 1.5)
+        fit_info.add_uniform_fit_param("sector1.log_gamma", -3, 1)
         retriever._validate_params(fit_info, self.calculator)
         params = np.array([
             fit_info.all_params[name].best_guess
