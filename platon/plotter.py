@@ -181,7 +181,7 @@ class Plotter:
 
     @staticmethod
     def _get_equal_samples(retrieval_result):
-        if retrieval_result.retrieval_type in ("dynesty", "nautilus"):
+        if retrieval_result.retrieval_type in ("dynesty", "nautilus", "smc"):
             equal_samples = dynesty.utils.resample_equal(
                 retrieval_result.samples, retrieval_result.weights)
             np.random.shuffle(equal_samples)
@@ -207,7 +207,7 @@ class Plotter:
             else retrieval_result.equal_samples if retrieval_result.retrieval_type == "pymultinest" \
             else retrieval_result.samples
         labels, samples = label_by_temperature(retrieval_result.fit_info, samples)
-        if retrieval_result.retrieval_type in ("dynesty", "nautilus"):
+        if retrieval_result.retrieval_type in ("dynesty", "nautilus", "smc"):
             fig = corner.corner(samples, weights=retrieval_result.weights,
                                 range=[0.99] * samples.shape[1],
                                 show_titles=True, labels=labels, **args)

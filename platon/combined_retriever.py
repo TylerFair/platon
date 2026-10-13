@@ -190,7 +190,7 @@ class CombinedRetriever:
                  measured_transit_errors, measured_eclipse_depths,
                  measured_eclipse_errors, ret_best_fit=False,
                  lnlike_per_point=False,
-                 zero_opacities=[]):
+                 zero_opacities=[], ret_model=False):
 
         if not fit_info._within_limits(params):
             return -np.inf
@@ -319,6 +319,15 @@ class CombinedRetriever:
         
         self.last_params = params
         self.last_lnprob = fit_info._ln_prior(params) + ln_likelihood.sum()
+
+        if ret_model:
+            mean, var = [], []
+            for model, errors in [(calculated_transit_depths, measured_transit_errors),
+                                  (calculated_eclipse_depths, measured_eclipse_errors)]:
+                if model is not None:
+                    mean.extend(model)
+                    var.extend(np.asarray(errors)**2 + error_excess**2)
+            return np.asarray(mean), np.asarray(var)
         
         if ret_best_fit:
             # Attach the full (untruncated) T/P profiles so that downstream
@@ -924,6 +933,123 @@ class CombinedRetriever:
                 np.array(retrieval_result.pointwise_lnlikes))
         return retrieval_result
         
+
+    def run_smc(self, transit_bins, transit_depths, transit_errors,
+                eclipse_bins, eclipse_depths, eclipse_errors,
+                fit_info, include_condensation=True, rad_method="xsec",
+                n_particles=512, cheap_downsample=None,
+                inner_steps=60, outer_steps=12, seed=None,
+                num_final_samples=100, zero_opacities=[], **smc_kwargs):
+        """Run adaptive tempered SMC with optional delayed acceptance.
+
+        ``cheap_downsample`` limits the transit model to this many opacity
+        wavelengths per data bin (xsec only) for the inner chains. The full
+        model determines the posterior and evidence. Extra options go to
+        ``smc_sampler.run_smc``.
+        """
+        from .smc_sampler import GaussianModel, run_smc
+
+        self.params_to_lnlike = {}
+        transit_calc = None
+        eclipse_calc = None
+        cheap_calc = None
+        if cheap_downsample is not None and (transit_bins is None or rad_method != "xsec"):
+            raise ValueError("cheap_downsample requires transit bins and rad_method='xsec'")
+        if transit_bins is not None:
+            transit_calc = TransitDepthCalculator(
+                include_condensation=include_condensation, method=rad_method,
+                **fit_info._stellar_grid_options())
+            transit_calc.change_wavelength_bins(transit_bins)
+            self._validate_params(fit_info, transit_calc)
+            if cheap_downsample is not None:
+                cheap_calc = TransitDepthCalculator(
+                    include_condensation=include_condensation, method=rad_method,
+                    **fit_info._stellar_grid_options())
+                cheap_calc.change_wavelength_bins(
+                    transit_bins, max_points_per_bin=cheap_downsample)
+        if eclipse_bins is not None:
+            eclipse_calc = EclipseDepthCalculator(
+                include_condensation=include_condensation, method=rad_method)
+            eclipse_calc.change_wavelength_bins(eclipse_bins)
+
+        data = np.concatenate([np.asarray(d) for d in
+                               (transit_depths, eclipse_depths) if d is not None])
+
+        def model(calc):
+            def predict(cubes):
+                mean = np.full((len(cubes), len(data)), np.nan)
+                var = np.full_like(mean, np.nan)
+                for i, cube in enumerate(cubes):
+                    prediction = self._ln_like(
+                        fit_info._from_unit_interval_array(cube), calc, eclipse_calc,
+                        fit_info, transit_depths, transit_errors,
+                        eclipse_depths, eclipse_errors,
+                        zero_opacities=zero_opacities, ret_model=True)
+                    if isinstance(prediction, tuple):
+                        mean[i], var[i] = prediction
+                return mean, var
+            return GaussianModel(predict, data)
+
+        smc_kwargs.setdefault("stiff_index", fit_info.fit_param_names.index("Rp")
+                              if "Rp" in fit_info.fit_param_names else None)
+        # Wavelength subsampling preserves atmospheric validity.
+        smc_kwargs.setdefault("same_support", cheap_calc is not None)
+        result = run_smc(
+            model(transit_calc), fit_info._get_num_fit_params(),
+            n_particles=n_particles,
+            cheap_loglike=model(cheap_calc) if cheap_calc is not None else None,
+            inner_steps=inner_steps, outer_steps=outer_steps, seed=seed, **smc_kwargs)
+        samples = np.array([fit_info._from_unit_interval_array(u)
+                            for u in result["samples"]])
+        logl = result["samples_loglike"]
+        logp = logl + np.array([fit_info._ln_prior(p) for p in samples])
+        best_params_arr = samples[np.argmax(logp)]
+        equal_samples = samples.copy()
+
+        labels, labelled_samples = label_by_temperature(
+            fit_info, np.vstack([equal_samples, best_params_arr]))
+        divisors, new_labels = self._get_divisors_labels(
+            np.median(labelled_samples[:-1], axis=0), labels)
+        write_param_estimates_file(
+            labelled_samples[:-1] / divisors, labelled_samples[-1] / divisors,
+            np.max(logp), new_labels)
+
+        best = self._ln_like(
+            best_params_arr, transit_calc, eclipse_calc, fit_info,
+            transit_depths, transit_errors, eclipse_depths, eclipse_errors,
+            zero_opacities=zero_opacities, ret_best_fit=True)
+        result.update(samples=samples, equal_samples=equal_samples,
+                      logl=logl, logp=logp, logw=np.log(result["weights"]),
+                      logz=np.atleast_1d(result["logz"]), success=True)
+        retrieval_result = RetrievalResult(
+            result, "smc", best_params_arr,
+            transit_bins, transit_depths, transit_errors,
+            eclipse_bins, eclipse_depths, eclipse_errors,
+            best[0], best[1], best[2], best[3],
+            fit_info, divisors, new_labels)
+
+        self._init_random_samples(retrieval_result)
+        for params in equal_samples[:num_final_samples]:
+            pointwise = self.params_to_lnlike.get(tuple(params))
+            if pointwise is None:
+                pointwise = self._ln_like(
+                    params, transit_calc, eclipse_calc, fit_info,
+                    transit_depths, transit_errors,
+                    eclipse_depths, eclipse_errors,
+                    zero_opacities=zero_opacities, lnlike_per_point=True)
+            _, transit_info, _, eclipse_info = self._ln_like(
+                params, transit_calc, eclipse_calc, fit_info,
+                transit_depths, transit_errors,
+                eclipse_depths, eclipse_errors,
+                zero_opacities=zero_opacities, ret_best_fit=True)
+            self._record_random_sample(
+                retrieval_result, transit_info, eclipse_info, pointwise)
+
+        if num_final_samples:
+            retrieval_result.loo_total, retrieval_result.loos, \
+                retrieval_result.loo_ks = psisloo(
+                    np.array(retrieval_result.pointwise_lnlikes))
+        return retrieval_result
 
     @staticmethod
     def get_default_fit_info(Rs, Mp, Rp, T=None, logZ=0, CO_ratio=0.53, log_CH4_mult=0,

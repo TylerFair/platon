@@ -357,7 +357,7 @@ class AtmosphereSolver:
     def get_lambda_grid(self):
         return np.array(self.lambda_grid)
 
-    def change_wavelength_bins(self, bins):
+    def change_wavelength_bins(self, bins, max_points_per_bin=None):
         """Specify wavelength bins, instead of using the full wavelength grid
         in self.lambda_grid.  This makes the code much faster, as
         `compute_depths` will only compute depths at wavelengths that fall
@@ -369,7 +369,18 @@ class AtmosphereSolver:
             Wavelength bins, where bins[i][0] is the start wavelength and
             bins[i][1] is the end wavelength for bin i. If bins is None, resets
             the calculator to its unbinned state.
+        max_points_per_bin : int, optional
+            Restrict each bin to evenly spaced opacity wavelengths for an
+            approximate xsec calculation.
         """
+        if max_points_per_bin is not None:
+            if self.raw["key"][0] != "xsec":
+                raise ValueError("max_points_per_bin requires method='xsec'")
+            if not isinstance(max_points_per_bin, (int, np.integer)) or \
+               max_points_per_bin < 1:
+                raise ValueError("max_points_per_bin must be a positive integer")
+            if bins is None:
+                raise ValueError("max_points_per_bin requires wavelength bins")
         self._mie_eff_xsec_cache = {}    # results depend on lambda_grid
         self._mie_nbins_cache = {}
         self._log_lambda_grid = None
@@ -402,8 +413,13 @@ class AtmosphereSolver:
 
         self.wavelength_bins = bins
 
-        cond = np.any([np.logical_and(full > start, full < end)
-                       for (start, end) in bins], axis=0)
+        cond = np.zeros(len(full), dtype=bool)
+        for start, end in bins:
+            idx = np.nonzero((full > start) & (full < end))[0]
+            if max_points_per_bin is not None and len(idx) > max_points_per_bin:
+                idx = idx[np.round(np.linspace(0, len(idx) - 1,
+                                               max_points_per_bin)).astype(int)]
+            cond[idx] = True
         self._lambda_cond = cond
         self.lambda_grid = full[cond]
         self.N_lambda = len(self.lambda_grid)
@@ -443,7 +459,8 @@ class AtmosphereSolver:
 
         bins_key = None if self.wavelength_bins is None \
             else self.wavelength_bins.tobytes()
-        key = (self.raw["key"], self.include_condensation, bins_key)
+        key = (self.raw["key"], self.include_condensation, bins_key,
+               self.lambda_grid.tobytes())
         if key in _DEVICE_CACHE:
             # Move to the end so the LRU eviction below treats it as fresh
             self._device_data = _DEVICE_CACHE.pop(key)

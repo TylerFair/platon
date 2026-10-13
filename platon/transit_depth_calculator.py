@@ -37,7 +37,7 @@ class TransitDepthCalculator:
                                     method, include_opacities, downsample,
                                     stellar_grid, logg_star, feh_star)
 
-    def change_wavelength_bins(self, bins):
+    def change_wavelength_bins(self, bins, max_points_per_bin=None):
         """Specify wavelength bins, instead of using the full wavelength grid
         in self.lambda_grid.  This makes the code much faster, as
         `compute_depths` will only compute depths at wavelengths that fall
@@ -49,8 +49,11 @@ class TransitDepthCalculator:
             Wavelength bins, where bins[i][0] is the start wavelength and
             bins[i][1] is the end wavelength for bin i. If bins is None, resets
             the calculator to its unbinned state.
+        max_points_per_bin : int, optional
+            Keep at most this many evenly spaced opacity wavelengths per bin
+            for an approximate xsec calculation.
         """
-        self.atm.change_wavelength_bins(bins)
+        self.atm.change_wavelength_bins(bins, max_points_per_bin)
 
     def _validate_params(self, T, logZ, CO_ratio, cloudtop_pressure):
         self.atm._validate_params(T, logZ, CO_ratio, cloudtop_pressure)
