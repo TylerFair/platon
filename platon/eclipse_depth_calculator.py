@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 from astropy.io import ascii
 
+from ._batch import Call, scalar_steps
 from . import _forward_model as fm
 from ._forward_model import planck_np
 from .errors import AtmosphereError
@@ -99,6 +100,7 @@ class EclipseDepthCalculator:
         self.atm.change_wavelength_bins(bins)
         self._surface_cache = {}
 
+    @scalar_steps
     def compute_depths(self, t_p_profile, star_radius, planet_mass,
                        planet_radius, T_star, logZ=0, CO_ratio=0.53,
                        CH4_mult=1, gases=None, vmrs=None,
@@ -139,7 +141,7 @@ class EclipseDepthCalculator:
             a_over_Rs = semimajor_axis / star_radius
             redist = self.redist_factors[surface_type]
 
-        cfg, inputs, host = prepare_forward_inputs(
+        cfg, inputs, host = (yield Call(prepare_forward_inputs,
             self.atm, star_radius=star_radius, planet_mass=planet_mass,
             planet_radius=planet_radius, P_profile=P_profile,
             T_profile=T_profile, logZ=logZ, CO_ratio=CO_ratio,
@@ -161,7 +163,7 @@ class EclipseDepthCalculator:
             stellar_blackbody=stellar_blackbody,
             bot_pressure=bot_pressure,
             surface_pressure=surface_pressure, a_over_Rs=a_over_Rs,
-            surface_temp=surface_temp, redist=redist)
+            surface_temp=surface_temp, redist=redist))
 
         if np.isfinite(cloudtop_pressure) and not has_surface:
             assert host["n_above"] >= 2, (
@@ -181,12 +183,12 @@ class EclipseDepthCalculator:
                 crust_T=crust_T.astype(np.float32))
 
         if full_output:
-            out = fm.eclipse_core(cfg, self.atm.device_data(), inputs)
+            out = (yield Call(fm.eclipse_core, cfg, self.atm.device_data(), inputs))
             binned, unbound, irrad = out.binned_depths, \
                 bool(out.atm.unbound), out.irrad
         else:
             binned, unbound, irrad = fm.split_eclipse_result(np.asarray(
-                fm.eclipse_depths_core(cfg, self.atm.device_data(), inputs)))
+                (yield Call(fm.eclipse_depths_core, cfg, self.atm.device_data(), inputs))))
 
         if unbound:
             raise AtmosphereError("Atmosphere unbound: height > hill radius")

@@ -164,6 +164,31 @@ class FitInfo:
                 (result[cold_i], result[hot_i]))
         return result
 
+    def _from_unit_interval_batch(self, cubes):
+        cubes = np.asarray(cubes, dtype=float)
+        if type(self)._from_unit_interval is not FitInfo._from_unit_interval or \
+           type(self)._from_unit_interval_array is not FitInfo._from_unit_interval_array:
+            return np.array([self._from_unit_interval_array(cube) for cube in cubes])
+        if cubes.ndim != 2 or cubes.shape[1] != len(self.fit_param_names):
+            raise ValueError("Fit array invalid")
+        result = np.empty_like(cubes, dtype=float)
+        for i, name in enumerate(self.fit_param_names):
+            param = self.all_params[name]
+            if type(param) is _UniformParam:
+                if not np.all((cubes[:, i] >= 0) & (cubes[:, i] <= 1)):
+                    raise AssertionError("u is between 0 and 1")
+                if np.isinf(param.low_lim) or np.isinf(param.high_lim):
+                    raise ValueError("Limit cannot be infinity")
+                result[:, i] = param.low_lim + (param.high_lim - param.low_lim) * cubes[:, i]
+            elif type(param) is _GaussianParam:
+                result[:, i] = param.from_unit_interval(cubes[:, i])
+            else:
+                result[:, i] = [param.from_unit_interval(u) for u in cubes[:, i]]
+        for cold, hot in getattr(self, "ordered_pairs", []):
+            i, j = self.fit_param_names.index(cold), self.fit_param_names.index(hot)
+            result[:, [i, j]] = np.sort(result[:, [i, j]], axis=1)
+        return result
+
     def _ln_prior(self, array):
         if not self._within_limits(array):
             return -np.inf

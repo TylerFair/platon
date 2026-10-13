@@ -10,6 +10,7 @@ import dynesty.utils
 import copy
 import pickle
 
+from ._batch import Call, scalar_steps, calculator_steps, steps_of
 from .psis import psisloo
 from .transit_depth_calculator import TransitDepthCalculator
 from .eclipse_depth_calculator import EclipseDepthCalculator
@@ -186,11 +187,12 @@ class CombinedRetriever:
         assert(np.around(np.sum(vmrs_with_bkg), decimals=5) == 1)
         return vmrs_with_bkg
     
+    @scalar_steps
     def _ln_like(self, params, transit_calc, eclipse_calc, fit_info, measured_transit_depths,
                  measured_transit_errors, measured_eclipse_depths,
                  measured_eclipse_errors, ret_best_fit=False,
                  lnlike_per_point=False,
-                 zero_opacities=[], ret_model=False):
+                 zero_opacities=[], ret_model=False, _record_state=True):
 
         if not fit_info._within_limits(params):
             return -np.inf
@@ -261,12 +263,12 @@ class CombinedRetriever:
                        params_dict.get("T_transit") is None and T is None:
                         raise ValueError(
                             "Must fit for T if using transit depths")
-                    transit_profile = Profile.from_params_dict(
-                        transit_profile_type, params_dict, suffix="_transit")
+                    transit_profile = (yield Call(Profile.from_params_dict,
+                        transit_profile_type, params_dict, suffix="_transit"))
                     transit_profiles = (transit_profile,)
                 else:
-                    transit_profile = transit_terminator.from_params(
-                        params_dict)
+                    transit_profile = (yield Call(transit_terminator.from_params,
+                        params_dict))
                     transit_profiles = (
                         transit_profile.cold.profile,
                         transit_profile.hot.profile)
@@ -275,7 +277,7 @@ class CombinedRetriever:
                        for p in transit_profiles):
                     raise AtmosphereError("Invalid T/P profile")
 
-                transit_wavelengths, calculated_transit_depths, transit_info_dict = transit_calc.compute_depths(
+                transit_wavelengths, calculated_transit_depths, transit_info_dict = (yield from calculator_steps(transit_calc.compute_depths,
                     transit_profile, Rs, Mp, Rp, logZ, CO_ratio, CH4_mult, gases, vmrs,
                     custom_abundances=None,
                     scattering_factor=scatt_factor, scattering_slope=scatt_slope,
@@ -283,42 +285,45 @@ class CombinedRetriever:
                     cloud_fraction=cloud_fraction, T_star=T_star,
                     **self._visit_hets(params_dict, len(measured_transit_depths)),
                     frac_scale_height=frac_scale_height, number_density=number_density,
-                    part_size=part_size, ri=ri, P_quench=P_quench, full_output=ret_best_fit, zero_opacities=zero_opacities)
+                    part_size=part_size, ri=ri, P_quench=P_quench, full_output=ret_best_fit, zero_opacities=zero_opacities))
 
                 self._apply_offsets(calculated_transit_depths, params_dict, "transit")
-                residuals = calculated_transit_depths - measured_transit_depths
-                scaled_errors = np.sqrt(measured_transit_errors**2 + error_excess**2)
-                ln_likelihood = np.append(ln_likelihood, -0.5 * (residuals**2 / scaled_errors**2 + np.log(2 * np.pi * scaled_errors**2)))
+                if not ret_model or _record_state:
+                    residuals = calculated_transit_depths - measured_transit_depths
+                    scaled_errors = np.sqrt(measured_transit_errors**2 + error_excess**2)
+                    ln_likelihood = np.append(ln_likelihood, -0.5 * (residuals**2 / scaled_errors**2 + np.log(2 * np.pi * scaled_errors**2)))
                 
             if measured_eclipse_depths is not None:
                 if params_dict["profile_type"] == "isothermal" and T is None:
                     raise ValueError(
                         "Must fit for T when profile_type is isothermal")
 
-                t_p_profile = Profile.from_params_dict(
-                    params_dict["profile_type"], params_dict)
+                t_p_profile = (yield Call(Profile.from_params_dict,
+                    params_dict["profile_type"], params_dict))
 
                 if np.any(np.isnan(t_p_profile.temperatures)):
                     raise AtmosphereError("Invalid T/P profile")
 
-                eclipse_wavelengths, calculated_eclipse_depths, eclipse_info_dict = eclipse_calc.compute_depths(
+                eclipse_wavelengths, calculated_eclipse_depths, eclipse_info_dict = (yield from calculator_steps(eclipse_calc.compute_depths,
                     t_p_profile, Rs, Mp, Rp, T_star, logZ, CO_ratio, CH4_mult, gases, vmrs,
                     custom_abundances=None,
                     scattering_factor=scatt_factor, scattering_slope=scatt_slope,
                     cloudtop_pressure=cloudtop_P,
                     T_het=T_het, het_cov_frac=het_cov_frac,
                     frac_scale_height=frac_scale_height, number_density=number_density,
-                    part_size = part_size, ri=ri, P_quench=P_quench, full_output=ret_best_fit, zero_opacities=zero_opacities)
+                    part_size = part_size, ri=ri, P_quench=P_quench, full_output=ret_best_fit, zero_opacities=zero_opacities))
                 self._apply_offsets(calculated_eclipse_depths, params_dict, "eclipse")
-                residuals = calculated_eclipse_depths - measured_eclipse_depths
-                scaled_errors = np.sqrt(measured_eclipse_errors**2 + error_excess**2)
-                ln_likelihood = np.append(ln_likelihood, -0.5 * (residuals**2 / scaled_errors**2 + np.log(2 * np.pi * scaled_errors**2)))
+                if not ret_model or _record_state:
+                    residuals = calculated_eclipse_depths - measured_eclipse_depths
+                    scaled_errors = np.sqrt(measured_eclipse_errors**2 + error_excess**2)
+                    ln_likelihood = np.append(ln_likelihood, -0.5 * (residuals**2 / scaled_errors**2 + np.log(2 * np.pi * scaled_errors**2)))
 
         except AtmosphereError as e:
             return -np.inf
         
-        self.last_params = params
-        self.last_lnprob = fit_info._ln_prior(params) + ln_likelihood.sum()
+        if _record_state:
+            self.last_params = params
+            self.last_lnprob = fit_info._ln_prior(params) + ln_likelihood.sum()
 
         if ret_model:
             mean, var = [], []
@@ -346,6 +351,36 @@ class CombinedRetriever:
 
         return ln_likelihood.sum()
 
+
+    def _ln_like_batch(self, params, transit_calc, eclipse_calc, fit_info,
+                       measured_transit_depths, measured_transit_errors,
+                       measured_eclipse_depths, measured_eclipse_errors,
+                       zero_opacities=[], evaluator=None):
+        """Return model means/variances; invalid rows contain NaNs for SMC."""
+        from ._batch import BatchEvaluator
+
+        if evaluator is None:
+            evaluator = BatchEvaluator()
+        args = (transit_calc, eclipse_calc, fit_info, measured_transit_depths,
+                measured_transit_errors, measured_eclipse_depths,
+                measured_eclipse_errors)
+        n_data = sum(len(d) for d in (measured_transit_depths, measured_eclipse_depths)
+                     if d is not None)
+        mean = np.full((len(params), n_data), np.nan)
+        var = np.full_like(mean, np.nan)
+        steps = steps_of(self._ln_like)
+        if steps is None:
+            # A user-defined _ln_like override is evaluated as written
+            values = [self._ln_like(row, *args, ret_model=True,
+                                    zero_opacities=zero_opacities) for row in params]
+        else:
+            values = evaluator.evaluate([
+                steps(self, row, *args, ret_model=True,
+                      zero_opacities=zero_opacities, _record_state=False) for row in params])
+        for i, value in enumerate(values):
+            if isinstance(value, tuple):
+                mean[i], var[i] = value
+        return mean, var
 
     @staticmethod
     def _profile_to_array(profile):
@@ -939,12 +974,15 @@ class CombinedRetriever:
                 fit_info, include_condensation=True, rad_method="xsec",
                 n_particles=512, cheap_downsample=None,
                 inner_steps=60, outer_steps=12, seed=None,
-                num_final_samples=100, zero_opacities=[], **smc_kwargs):
+                num_final_samples=100, zero_opacities=[], batched=True,
+                batch_size=64, **smc_kwargs):
         """Run adaptive tempered SMC with optional delayed acceptance.
 
         ``cheap_downsample`` limits the transit model to this many opacity
         wavelengths per data bin (xsec only) for the inner chains. The full
-        model determines the posterior and evidence. Extra options go to
+        model determines the posterior and evidence. ``batched=False`` uses
+        scalar evaluations for debugging; ``batch_size`` sets the fixed device
+        chunk size, independent of population size. Extra options go to
         ``smc_sampler.run_smc``.
         """
         from .smc_sampler import GaussianModel, run_smc
@@ -976,7 +1014,16 @@ class CombinedRetriever:
                                (transit_depths, eclipse_depths) if d is not None])
 
         def model(calc):
+            from ._batch import BatchEvaluator
+            evaluator = BatchEvaluator(batch_size)
+
             def predict(cubes):
+                if batched and steps_of(self._ln_like) is not None:
+                    params = fit_info._from_unit_interval_batch(cubes)
+                    return self._ln_like_batch(
+                        params, calc, eclipse_calc, fit_info, transit_depths,
+                        transit_errors, eclipse_depths, eclipse_errors,
+                        zero_opacities=zero_opacities, evaluator=evaluator)
                 mean = np.full((len(cubes), len(data)), np.nan)
                 var = np.full_like(mean, np.nan)
                 for i, cube in enumerate(cubes):

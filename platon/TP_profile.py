@@ -80,6 +80,35 @@ class Profile:
             raise ValueError("Unknown profile type: {}".format(profile_type))
 
     @classmethod
+    def from_params_dict_batch(cls, profile_type, rows, suffix=""):
+        """Evaluate the existing profile formula with a leading batch axis."""
+        params = {k: (np.asarray([r[k] for r in rows])[:, None]
+                      if v is not None and np.isscalar(v) and
+                      not isinstance(v, (str, bool)) else v)
+                  for k, v in rows[0].items()}
+        try:
+            batch = _ProfileBatch.from_params_dict(profile_type, params, suffix)
+            profiles = []
+            pressures = _default_pressures()
+            for i in range(len(rows)):
+                profile = cls(pressures.copy(), batch.temperatures[i])
+                profile.profile_type = batch.profile_type
+                profile.profile_params = {
+                    k: v[i, 0] if isinstance(v, np.ndarray) else v
+                    for k, v in batch.profile_params.items()}
+                profiles.append(profile)
+            return profiles
+        except Exception:
+            # A malformed configuration must raise the same scalar exception.
+            profiles = []
+            for row in rows:
+                try:
+                    profiles.append(cls.from_params_dict(profile_type, row, suffix))
+                except Exception as error:
+                    profiles.append(error)
+            return profiles
+
+    @classmethod
     def from_arrays(cls, P_profile, T_profile):
         """Interpolates the given profile (in log P) onto the default pressure
         grid.  To use the arrays as-is, call Profile(pressures, temperatures)
@@ -137,7 +166,7 @@ class Profile:
 
         k_th = 10.0**log_k_th
         gamma = 10.0**log_gamma
-        if log_gamma2 is None and alpha != 0:
+        if log_gamma2 is None and np.any(alpha != 0):
             raise ValueError("log_gamma2 must be given when alpha != 0")
         gamma2 = 10.0**log_gamma2 if log_gamma2 is not None else None
 
@@ -161,3 +190,12 @@ class Profile:
             T_star=T_star, Rs=Rs, a=a, Mp=Mp, Rp=Rp, beta=beta,
             log_k_th=log_k_th, log_gamma=log_gamma,
             log_gamma2=log_gamma2, alpha=alpha, T_int=T_int))
+
+
+class _ProfileBatch(Profile):
+    """Internal broadcasting view; public Profile still requires 1D arrays."""
+    def __init__(self, pressures, temperatures):
+        self.pressures = np.asarray(pressures, dtype=np.float64)
+        self.temperatures = np.asarray(temperatures, dtype=np.float64)
+        self.profile_type = None
+        self.profile_params = {}

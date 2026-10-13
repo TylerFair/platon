@@ -1,5 +1,6 @@
 import numpy as np
 
+from ._batch import Call, scalar_steps, calculator_steps
 from . import _forward_model as fm
 from ._forward_prep import prepare_forward_inputs, atm_info_dict
 from .errors import AtmosphereError
@@ -58,6 +59,7 @@ class TransitDepthCalculator:
     def _validate_params(self, T, logZ, CO_ratio, cloudtop_pressure):
         self.atm._validate_params(T, logZ, CO_ratio, cloudtop_pressure)
 
+    @scalar_steps
     def compute_depths(self, t_p_profile, star_radius, planet_mass,
                        planet_radius, logZ=0, CO_ratio=0.53, CH4_mult=1,
                        gases=None, vmrs=None,
@@ -207,13 +209,13 @@ class TransitDepthCalculator:
                 T_star if T_het2 is None else T_het2, 0 if het2_cov_frac is None else het2_cov_frac]
         if any(np.ndim(x) for x in hets):
             # Per-bin heterogeneities: one calculation per distinct set
-            kwargs, code = dict(locals()), self.compute_depths.__code__
+            kwargs, code = dict(locals()), TransitDepthCalculator.compute_depths.__wrapped__.__code__
             kwargs = {name: kwargs[name] for name in code.co_varnames[1:code.co_argcount]}
             rows = np.column_stack(np.broadcast_arrays(*hets))
             depths = np.zeros(len(rows))
             for i, row in enumerate(np.unique(rows, axis=0)):
-                wavelengths, visit_depths, visit_info = self.compute_depths(**dict(
-                    kwargs, T_het=row[0], het_cov_frac=row[1], T_het2=row[2], het2_cov_frac=row[3]))
+                wavelengths, visit_depths, visit_info = (yield from calculator_steps(self.compute_depths, **dict(
+                    kwargs, T_het=row[0], het_cov_frac=row[1], T_het2=row[2], het2_cov_frac=row[3])))
                 visit = np.all(rows == row, axis=1)
                 depths[visit] = visit_depths[visit]
                 info = visit_info if i == 0 else info
@@ -244,21 +246,21 @@ class TransitDepthCalculator:
                 zero_opacities=zero_opacities)
 
             def run_sector(sector):
-                return self.compute_depths(
+                return (yield from calculator_steps(self.compute_depths,
                     sector.profile, star_radius, planet_mass, planet_radius,
                     scattering_factor=sector.scattering_factor,
                     scattering_slope=sector.scattering_slope,
                     cloudtop_pressure=sector.cloudtop_pressure,
-                    **common)
+                    **common))
 
             fraction = t_p_profile.cold_fraction
             if not full_output and fraction in (0, 1):
-                return run_sector(
-                    t_p_profile.cold if fraction == 1 else t_p_profile.hot)
+                return (yield from run_sector(
+                    t_p_profile.cold if fraction == 1 else t_p_profile.hot))
 
-            cold_wavelengths, cold_depths, cold_info = run_sector(
-                t_p_profile.cold)
-            _, hot_depths, hot_info = run_sector(t_p_profile.hot)
+            cold_wavelengths, cold_depths, cold_info = (yield from run_sector(
+                t_p_profile.cold))
+            _, hot_depths, hot_info = (yield from run_sector(t_p_profile.hot))
             depths = fraction * cold_depths + (1 - fraction) * hot_depths
             if not full_output:
                 return cold_wavelengths, depths, None
@@ -317,15 +319,15 @@ class TransitDepthCalculator:
             if cloud_fraction == 0:
                 prep_kwargs = prep_kwargs_clear
 
-        cfg, inputs, host = prepare_forward_inputs(self.atm, **prep_kwargs)
+        cfg, inputs, host = (yield Call(prepare_forward_inputs, self.atm, **prep_kwargs))
 
         if full_output:
-            out = fm.transit_core(cfg, self.atm.device_data(), inputs)
+            out = (yield Call(fm.transit_core, cfg, self.atm.device_data(), inputs))
             clear_out = None
             if 0 < cloud_fraction < 1:
-                clear = prepare_forward_inputs(self.atm, **prep_kwargs_clear)
-                clear_out = fm.transit_core(clear[0], self.atm.device_data(),
-                                            clear[1])
+                clear = (yield Call(prepare_forward_inputs, self.atm, **prep_kwargs_clear))
+                clear_out = (yield Call(fm.transit_core, clear[0], self.atm.device_data(),
+                                            clear[1]))
             binned = np.array(out.binned_depths, dtype=np.float64)
             unbound = bool(out.atm.unbound)
             if clear_out is not None:
@@ -336,18 +338,18 @@ class TransitDepthCalculator:
             # Fused core: shares abundances, hydrostatics, absorption opacity,
             # and the tau matmul, then adds each terminator's scattering.
             cloudy, clear_binned, unbound = fm.split_transit_dual_result(
-                np.asarray(fm.transit_depths_dual_core(
-                    cfg, self.atm.device_data(), inputs)))
+                np.asarray((yield Call(fm.transit_depths_dual_core,
+                    cfg, self.atm.device_data(), inputs))))
             binned = cloud_fraction * np.array(cloudy, dtype=np.float64) + \
                 (1 - cloud_fraction) * np.array(clear_binned,
                                                 dtype=np.float64)
         elif 0 < cloud_fraction < 1:
             # Non-default min_cross_sec: its floor applies per terminator,
             # which the fused core cannot reproduce; run both separately
-            clear = prepare_forward_inputs(self.atm, **prep_kwargs_clear)
-            res = fm.transit_depths_core(cfg, self.atm.device_data(), inputs)
-            clear_res = fm.transit_depths_core(
-                clear[0], self.atm.device_data(), clear[1])
+            clear = (yield Call(prepare_forward_inputs, self.atm, **prep_kwargs_clear))
+            res = (yield Call(fm.transit_depths_core, cfg, self.atm.device_data(), inputs))
+            clear_res = (yield Call(fm.transit_depths_core,
+                clear[0], self.atm.device_data(), clear[1]))
             binned, unbound = fm.split_transit_result(np.asarray(res))
             clear_binned, clear_unbound = fm.split_transit_result(
                 np.asarray(clear_res))
@@ -357,7 +359,7 @@ class TransitDepthCalculator:
             unbound = unbound or clear_unbound
         else:
             binned, unbound = fm.split_transit_result(np.asarray(
-                fm.transit_depths_core(cfg, self.atm.device_data(), inputs)))
+                (yield Call(fm.transit_depths_core, cfg, self.atm.device_data(), inputs))))
             binned = np.array(binned, dtype=np.float64)
 
         if unbound:

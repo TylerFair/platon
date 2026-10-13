@@ -98,14 +98,16 @@ class TwoSectorTerminator:
                 values[name] = self.cold.profile.profile_params[name]
         return values
 
-    def sectors_from_params(self, params):
+    def sectors_from_params(self, params, profiles=None):
         """(sector1, sector2) of a retrieval parameter dictionary.  Guillot
         sectors take T_star, Rs, a, Mp, Rp, log_k_th, and T_int from params,
         and beta and log_gamma from the sector-prefixed names (e.g.
         sector1.beta)."""
         sectors = []
         for label in ("sector1", "sector2"):
-            if self.profile_type == "isothermal":
+            if profiles is not None:
+                profile = profiles[len(sectors)]
+            elif self.profile_type == "isothermal":
                 profile = Profile.isothermal(params[f"{label}.T"])
             else:
                 profile = Profile.guillot(
@@ -122,14 +124,36 @@ class TwoSectorTerminator:
                 params[f"{label}.scatt_slope"]))
         return sectors
 
-    def from_params(self, params):
+    def from_params(self, params, profiles=None):
         """Build a terminator from a retrieval parameter dictionary, with the
         colder of sector1 and sector2 as the cold sector."""
-        first, second = self.sectors_from_params(params)
+        first, second = self.sectors_from_params(params) if profiles is None \
+            else self.sectors_from_params(params, profiles)
         fraction = params["sector1.fraction"]
         if sector_temperature(first.profile) > sector_temperature(second.profile):
             return TwoSectorTerminator(second, first, 1 - fraction)
         return TwoSectorTerminator(first, second, fraction)
+
+
+    def from_params_batch(self, rows):
+        """Batch the shared T/P formulas, keeping scalar sector labelling."""
+        profiles = []
+        for label in ("sector1", "sector2"):
+            params = [dict(row, **({"T": row[f"{label}.T"]}
+                      if self.profile_type == "isothermal" else
+                      {"beta": row[f"{label}.beta"],
+                       "log_gamma": row[f"{label}.log_gamma"]})) for row in rows]
+            profiles.append(Profile.from_params_dict_batch(self.profile_type, params))
+        results = []
+        for i, row in enumerate(rows):
+            try:
+                pair = [p[i] for p in profiles]
+                error = next((p for p in pair if isinstance(p, Exception)), None)
+                results.append(error if error is not None else
+                               self.from_params(row, pair))
+            except Exception as error:
+                results.append(error)
+        return results
 
 
 def label_by_temperature(fit_info, samples):

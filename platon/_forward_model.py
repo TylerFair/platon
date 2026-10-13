@@ -154,15 +154,17 @@ def pack_inputs(scalars, floor_idx, T_profile, P_profile, shell_mask,
     unpack_inputs so the layout is defined in one place.  Assignments into
     the float32 vector cast as needed (the int fields are small indices,
     exactly representable as floats)."""
-    n = len(T_profile)
+    T_profile = np.asarray(T_profile)
+    n = T_profile.shape[-1]
     o = SC_N_SCALARS + IX_N_INTS
-    packed = np.zeros(o + 3 * n - 1 + len(opac_mask), dtype=np.float32)
-    packed[:SC_N_SCALARS] = scalars
-    packed[SC_N_SCALARS + IX_FLOOR] = floor_idx
-    packed[o:o + n] = T_profile
-    packed[o + n:o + 2 * n] = P_profile
-    packed[o + 2 * n:o + 3 * n - 1] = shell_mask
-    packed[o + 3 * n - 1:] = opac_mask
+    packed = np.zeros(T_profile.shape[:-1] +
+                      (o + 3 * n - 1 + len(opac_mask),), dtype=np.float32)
+    packed[..., :SC_N_SCALARS] = scalars
+    packed[..., SC_N_SCALARS + IX_FLOOR] = floor_idx
+    packed[..., o:o + n] = T_profile
+    packed[..., o + n:o + 2 * n] = P_profile
+    packed[..., o + 2 * n:o + 3 * n - 1] = shell_mask
+    packed[..., o + 3 * n - 1:] = opac_mask
     return packed
 
 
