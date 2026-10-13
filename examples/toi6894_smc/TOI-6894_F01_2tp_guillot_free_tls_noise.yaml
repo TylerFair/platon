@@ -1,0 +1,67 @@
+# TOI-6894 b two-sector (2-TP) Guillot free retrieval with one heterogeneity and
+# excess noise.  The sectors are sampled as sector1/sector2 with independent,
+# identical priors and labelled cold/hot by temperature afterwards.  Abundances
+# are shared; beta, log_gamma, cloud deck and haze differ per sector.  27 free
+# parameters.  MultiNest needed ~1.8e8 likelihood calls for this retrieval.
+tag: TOI-6894_F01_2tp_guillot_free_tls_noise
+output_dir: results
+data_file: TOI-6894_qiao_power2_0p8_5p2.csv
+rad_method: xsec
+
+star:
+  Rs_Rsun: 0.2276
+  T_star: 3007.0
+  T_star_sigma: 58.0            # T_star ~ N(3007, 58) K
+  logg: 5.039
+  feh: 0.142
+
+planet:
+  Mp_Mjup: 0.168
+  Mp_sigma_Mjup: 0.022          # Mp ~ N(0.168, 0.022) M_J
+  Rp_RJ: 0.855
+  Rp_frac_range: [0.85, 1.15]   # Rp ~ U(0.85, 1.15) x 0.855 RJ
+  a_AU: 0.02603                 # Kepler III (P = 3.3708 d, M* = 0.207 Msun); only sets the T_irr <-> beta scale
+  T_guess: 390.0                # Teq
+
+profile:
+  type: guillot
+  T_irr_range: [300, 3000]      # K; sampled as beta at the nominal T_star
+  log_gamma: [-2, 0.5]          # per sector
+  log_k_th: [-3, -0.5]          # shared; log10 m^2/kg (legacy [-2, 0.5] was cm^2/g)
+  T_int: [30, 630]              # shared
+
+terminator:
+  two_sector: true
+  fraction_range: [0, 1]        # sector1.fraction ~ U(0, 1)  (legacy f_limb)
+
+clouds:                         # per sector: gray deck + parametric haze
+  log_cloudtop_P: [-1, 8]       # log10 Pa
+  log_scatt_factor: [-4, 8]
+  scatt_slope: [-2, 15]
+
+error_excess_ppm: [0, 1000]     # sigma^2 -> sigma^2 + error_excess^2
+
+chemistry:
+  gases: [H2O, NH3, CH4, CS2, H2S, HCN, CO2, CO]
+  filler: H2-He
+  log_vmr_range: [-12, -1]
+
+sampler:                        # options other than name go to CombinedRetriever.run_smc
+  name: smc
+  n_particles: 512
+  cheap_downsample: 8           # cheap model: <= 8 opacity wavelengths per data bin
+  inner_steps: 60
+  outer_steps: 12
+  seed: 0
+  num_final_samples: 100
+  # For comparison:
+  # name: multinest
+  # n_live_per_param: 50        # 50 x 27 = 1350
+  # evidence_tolerance: 0.5
+  # sampling_efficiency: 0.8
+
+tls:
+  model: one_het
+  stellar_grid: newera
+  T_het_range: [2300, 4507]     # NewEra grid minimum to T_star + 1500 K
+  cov_frac_range: [0, 0.2]
