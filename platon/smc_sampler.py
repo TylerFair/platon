@@ -2,9 +2,10 @@
 
 Likelihoods take an array of unit-cube rows and return log likelihoods.
 GaussianModel additionally exposes predictions for a spectrum correction and
-Gauss-Newton radius map. Proposal fits are frozen within each inner chain.
-Population fitting (folds=1) can introduce finite-population adaptation bias;
-cross-fitting is reserved for a subsequent implementation.
+Gauss-Newton radius map. Sequential cross-fitting freezes all mutation fits
+on the current complement. Mutation is invariant at fixed beta given that
+complement; adaptive tempering/resampling still preclude a finite-N unbiased
+evidence claim. Fitting on self (folds=1) is biased and kept for comparison.
 """
 import time
 
@@ -59,8 +60,31 @@ def _systematic(rng, weights):
     return np.searchsorted(cdf, (rng.random() + np.arange(len(weights))) / len(weights))
 
 
+def _resampling_folds(z_before, parents, k, rng):
+    # Deduplicate *current values*, not old root lineage labels: different
+    # moved descendants are distinct current training observations. This
+    # rejects immediate self-copy leakage without accumulating entire roots
+    # into a single fold after many resampling generations.
+    _, inverse = np.unique(z_before, axis=0, return_inverse=True)
+    family = inverse[parents]
+    ids, counts = np.unique(family, return_counts=True)
+    loads = np.zeros(k, int)
+    assignment = {}
+    # Random tie order independent of coordinates; largest families first
+    # balance the population while never splitting one exact clone family.
+    order = rng.permutation(len(ids))
+    order = order[np.argsort(-counts[order], kind='stable')]
+    for j in order:
+        choices = np.flatnonzero(loads == loads.min())
+        f = int(rng.choice(choices))
+        assignment[int(ids[j])] = f
+        loads[f] += counts[j]
+    labels = np.array([assignment[int(x)] for x in family])
+    return [np.flatnonzero(labels == f) for f in range(k) if np.any(labels == f)]
+
+
 class _Correction:
-    """Ridge quadratic fit, fixed during a temperature's mutation."""
+    """Ridge quadratic fit, frozen throughout active-fold mutation."""
 
     def _features(self, x):
         i, j = np.triu_indices(x.shape[1])
@@ -186,8 +210,8 @@ def _move(z, ll, beta, surrogate, mapping, reference, steps, rho, rng):
 def run_smc(loglike, ndim, n_particles=512, cheap_loglike=None,
             inner_steps=60, outer_steps=12, seed=None, ess_fraction=0.5,
             t_dof=5.0, ridge=1.0, archive_max=8000, stiff_index=None,
-            folds=1, n_samples=None, max_prior_draws=1000000, log=None,
-            adaptive_steps=True, inner_corr=0.5, corr_target=0.1, same_support=False):
+            folds=2, n_samples=None, max_prior_draws=1000000, log=None,
+            adaptive_steps=False, inner_corr=0.5, corr_target=0.1, same_support=False):
     """Return equal-weight unit-cube samples, likelihoods and log evidence.
 
     Non-finite full likelihoods define the invalid prior region. Initial
@@ -197,13 +221,20 @@ def run_smc(loglike, ndim, n_particles=512, cheap_loglike=None,
     values fall back to full evaluations, preserving target support.
 
     ``stiff_index`` enables a scalar probit-coordinate map when rho < 0.4.
-    ``folds=1`` is currently the only supported population-fitting strategy.
+    ``folds=2`` fits references, correction and map on the current complement,
+    updating folds sequentially. A disposable 16-step complement pilot freezes
+    rho and the map choice before active moves. ``folds=1`` fits on self and
+    is biased; it retains the legacy algorithm for comparison.
+    At fixed beta, mutation is invariant conditional on the complement.
+    Adaptive tempering/resampling still preclude finite-N unbiasedness claims.
+    Cross-fit corrections use cached current predictions, not archive_max.
     The evidence error is an SMC incremental-weight estimate; it excludes
     adaptation bias and correlation between temperatures.
-    By default, inner_steps/outer_steps are caps: inner length targets
-    inner_corr, and outer moves stop once estimated correlation <= corr_target
-    (at least 5 inner/2 outer steps, bounded by the caps). Set adaptive_steps=False
-    for fixed chain lengths.
+    Defaults are fixed 60 inner / 12 outer moves. With adaptive_steps=True,
+    cross-fitting forecasts inner length from pilot rho, with fixed outer count.
+    Only folds=1 retains active acceptance adaptation and outer stopping.
+    History corr is a heuristic acceptance-based forecast, not a measured
+    autocorrelation; n_parents and n_unique count distinct parents and final rows.
     same_support=True declares identical full/cheap validity regions, allowing
     cheap rejection screening; generic cheap models retain the full fallback.
     """
@@ -213,8 +244,10 @@ def run_smc(loglike, ndim, n_particles=512, cheap_loglike=None,
         raise ValueError("dimensions, population and step counts must be positive integers")
     if n_particles < 2 or not 0 < ess_fraction < 1 or t_dof <= 0 or ridge <= 0:
         raise ValueError("require n_particles >= 2, 0 < ess_fraction < 1, dof and ridge > 0")
-    if folds != 1:
-        raise ValueError("cross-fitting is not yet implemented; folds must be 1")
+    if not isinstance(folds, (int, np.integer)) or not 1 <= folds <= n_particles:
+        raise ValueError("folds must be an integer in [1, n_particles]")
+    if folds >= 2 and n_particles - int(np.ceil(n_particles / folds)) <= ndim + 2:
+        raise ValueError("cross-fit complement must contain more than ndim + 2 rows")
     if not 0 < inner_corr < 1 or not 0 < corr_target < 1:
         raise ValueError("inner_corr and corr_target must be between 0 and 1")
     if stiff_index is not None and not 0 <= stiff_index < ndim:
@@ -235,7 +268,7 @@ def run_smc(loglike, ndim, n_particles=512, cheap_loglike=None,
             raise ValueError("likelihood must return one value per unit-cube row")
         return np.where(np.isfinite(ll), ll, -np.inf), None
 
-    def full(z):
+    def full(z, cached=False):
         keep = np.ones(len(z), bool)
         low, low_prediction = None, None
         if same_support and cheap_loglike is not None:
@@ -243,11 +276,11 @@ def run_smc(loglike, ndim, n_particles=512, cheap_loglike=None,
             keep = np.isfinite(low)
         ll = np.full(len(z), -np.inf)
         if not keep.any():
-            return ll
+            return (ll, None) if cached else ll
         selected = z[keep]
         values, prediction = evaluate(loglike, selected, 0)
         ll[keep] = values
-        if cheap_loglike is not None:
+        if cheap_loglike is not None and folds == 1:
             if low is None:
                 low, low_prediction = evaluate(cheap_loglike, selected, 1)
             else:
@@ -262,21 +295,29 @@ def run_smc(loglike, ndim, n_particles=512, cheap_loglike=None,
                 archive_diff.extend(diff[good])
                 del archive_z[:-archive_max]
                 del archive_diff[:-archive_max]
-        return ll
+        payload = None
+        if cached:
+            payload = np.full((len(z), prediction[0].shape[1]), np.nan) if spectral else ll.copy()
+            if spectral:
+                payload[keep] = prediction[0]
+        return (ll, payload) if cached else ll
 
-    zs, ls, drawn, valid = [], [], 0, 0
+    zs, ls, ps, drawn, valid = [], [], [], 0, 0
     while valid < n_particles:
         size = min(max(256, n_particles), max_prior_draws - drawn)
         if size <= 0:
             raise RuntimeError("could not initialize valid particles within max_prior_draws")
         z = rng.standard_normal((size, ndim))
-        ll = full(z)
+        ll, payload = full(z, cached=True)
         ok = np.isfinite(ll)
         drawn += size
         valid += ok.sum()
         zs.extend(z[ok])
         ls.extend(ll[ok])
+        if payload is not None:
+            ps.extend(payload[ok])
     z, ll = np.array(zs[:n_particles]), np.array(ls[:n_particles])
+    payload = np.array(ps[:n_particles])
     log_valid = np.log(valid / drawn)
     logz, variance, beta = log_valid, (1 - valid / drawn) / valid, 0.0
     rho = min(0.99, 2.38 / np.sqrt(ndim))
@@ -290,87 +331,147 @@ def run_smc(loglike, ndim, n_particles=512, cheap_loglike=None,
         logz += logsumexp(logw) - np.log(n_particles)
         variance += max(n_particles * np.sum(w**2) - 1, 0) / n_particles
         idx = _systematic(rng, w)
-        z, ll, beta = z[idx].copy(), ll[idx].copy(), next_beta
-        corr = None
-        if cheap_loglike is not None and len(archive_z) > 50:
-            corr = _Correction(np.array(archive_z), np.array(archive_diff), ridge)
-
-        def predict(z):
-            low, prediction = evaluate(cheap_loglike, z, 1)
-            mean, var = prediction
-            if corr is not None:
-                mean = mean + corr(z)
-            return mean, var
-
-        def surrogate(z):
-            if cheap_loglike is None:
-                return full(z)
-            if spectral:
-                mean, var = predict(z)
-                low = cheap_loglike.loglike_from(mean, var)
-                base_valid = np.all(np.isfinite(var) & (var > 0), axis=1)
-            else:
-                low, _ = evaluate(cheap_loglike, z, 1)
-                base_valid = np.isfinite(low)
-                if corr is not None:
-                    low = low + corr(z)
-            bad = ~np.isfinite(low)
-            if same_support:
-                bad &= base_valid
-            if bad.any():
-                low[bad] = full(z[bad])
-            return low
-
-        sl = ll.copy() if cheap_loglike is None else surrogate(z)
+        groups = (_resampling_folds(z, idx, folds, rng) if folds >= 2
+                  else [np.arange(n_particles)])
+        z, ll, payload, beta = z[idx].copy(), ll[idx].copy(), payload[idx].copy(), next_beta
+        population, population_ll, population_payload = z, ll, payload
         inner_accepts, outer_accepts, lengths, rhos = [], [], [], []
-        corr_prod = 1.0
-        for _ in range(outer_steps):
-            mapping = None
-            if use_stiff:
-                mapping = _StiffMap(z, stiff_index, beta, surrogate,
-                                    predict if spectral else None,
-                                    loglike.data if spectral else None)
-            x = z if mapping is None else mapping.forward(z)[0]
-            reference = _Reference(x, t_dof)
-            n_inner = inner_steps
-            if adaptive_steps:
-                per = 1 - 0.3 * (1 - np.sqrt(1 - rho**2))
-                n_inner = int(np.clip(np.ceil(np.log(inner_corr) / np.log(per)),
-                                     min(5, inner_steps), inner_steps))
-            y, sy, rate = _move(z.copy(), sl.copy(), beta, surrogate, mapping,
-                                reference, n_inner, rho, rng)
-            if cheap_loglike is None:
-                z, ll, sl = y, sy, sy.copy()
-                outer_rate = 1.0
-            else:
-                moved = np.any(y != z, axis=1)
-                ly = ll.copy()
-                if moved.any():
-                    ly[moved] = full(y[moved])
-                with np.errstate(invalid="ignore"):
-                    accept = moved & (np.log(rng.random(n_particles)) <
-                                      beta * ((ly - sy) - (ll - sl)))
-                accept &= np.isfinite(ly)
-                z[accept], ll[accept], sl[accept] = y[accept], ly[accept], sy[accept]
-                outer_rate = accept.mean()
-            inner_accepts.append(rate)
-            outer_accepts.append(outer_rate)
-            lengths.append(n_inner)
-            rhos.append(rho)
-            c_inner = (1 - rate * (1 - np.sqrt(1 - rho**2)))**n_inner
-            corr_prod *= 1 - outer_rate * (1 - c_inner)
-            rho = min(0.99, rho * np.exp(0.5 * (rate - 0.3)))
-            if adaptive_steps and len(lengths) >= min(2, outer_steps) and corr_prod <= corr_target:
-                break
-        if stiff_index is not None and not use_stiff and np.mean(rhos) < 0.4:
-            use_stiff, rho = True, 0.5
+        corr_forecast = 0.0
+        for active in groups:
+            corr_prod = 1.0
+            complement = np.ones(n_particles, bool)
+            complement[active] = False
+            train, train_ll = population[complement], population_ll[complement]
+            train_payload = population_payload[complement]
+            if folds >= 2 and len(train) <= ndim + 2:
+                # An unsplittable clone family can exhaust the complement.
+                # Identity mutation is invariant and avoids fitting on self.
+                corr_forecast += len(active) / n_particles
+                continue
+            z, ll = population[active].copy(), population_ll[active].copy()
+            payload = population_payload[active].copy()
+            corr = None
+            if folds == 1 and cheap_loglike is not None and len(archive_z) > 50:
+                corr = _Correction(np.array(archive_z), np.array(archive_diff), ridge)
+
+            def predict(z):
+                low, prediction = evaluate(cheap_loglike, z, 1)
+                mean, var = prediction
+                if corr is not None:
+                    mean = mean + corr(z)
+                return mean, var
+
+            def surrogate(z):
+                if cheap_loglike is None:
+                    return full(z)
+                if spectral:
+                    mean, var = predict(z)
+                    low = cheap_loglike.loglike_from(mean, var)
+                    base_valid = np.all(np.isfinite(var) & (var > 0), axis=1)
+                else:
+                    low, _ = evaluate(cheap_loglike, z, 1)
+                    base_valid = np.isfinite(low)
+                    if corr is not None:
+                        low = low + corr(z)
+                bad = ~np.isfinite(low)
+                if same_support:
+                    bad &= base_valid
+                if bad.any():
+                    low[bad] = full(z[bad])
+                return low
+
+            mapping, reference = None, None
+            if folds >= 2:
+                if cheap_loglike is not None:
+                    low, prediction = evaluate(cheap_loglike, train, 1)
+                    good = np.isfinite(low)
+                    with np.errstate(invalid="ignore"):
+                        diff = train_payload - prediction[0] if spectral else train_ll - low
+                    if good.sum() > 50:
+                        corr = _Correction(train[good], diff[good], ridge)
+
+                def fit(stiff):
+                    mapping = (_StiffMap(train, stiff_index, beta, surrogate,
+                                        predict if spectral else None,
+                                        loglike.data if spectral else None) if stiff else None)
+                    x = train if mapping is None else mapping.forward(train)[0]
+                    return mapping, _Reference(x, t_dof)
+
+                def pilot(rho, mapping, reference):
+                    p, pl = train.copy(), surrogate(train)
+                    for _ in range(16):
+                        p, pl, rate = _move(p, pl, beta, surrogate, mapping,
+                                            reference, 1, rho, rng)
+                        rho = min(0.99, rho * np.exp(0.5 * (rate - 0.3)))
+                    return rho
+
+                mapping, reference = fit(False)
+                rho = pilot(min(0.99, 2.38 / np.sqrt(ndim)), mapping, reference)
+                if stiff_index is not None and rho < 0.4:
+                    mapping, reference = fit(True)
+                    rho = pilot(0.5, mapping, reference)
+            sl = ll.copy() if cheap_loglike is None else surrogate(z)
+            for _ in range(outer_steps):
+                if folds == 1:
+                    mapping = None
+                if folds == 1 and use_stiff:
+                    mapping = _StiffMap(z, stiff_index, beta, surrogate,
+                                        predict if spectral else None,
+                                        loglike.data if spectral else None)
+                if folds == 1:
+                    x = z if mapping is None else mapping.forward(z)[0]
+                    reference = _Reference(x, t_dof)
+                n_inner = inner_steps
+                if adaptive_steps:
+                    per = 1 - 0.3 * (1 - np.sqrt(1 - rho**2))
+                    n_inner = int(np.clip(np.ceil(np.log(inner_corr) / np.log(per)),
+                                         min(5, inner_steps), inner_steps))
+                y, sy, rate = _move(z.copy(), sl.copy(), beta, surrogate, mapping,
+                                    reference, n_inner, rho, rng)
+                if cheap_loglike is None:
+                    z, ll, sl = y, sy, sy.copy()
+                    payload = ll.copy()
+                    outer_rate = 1.0
+                else:
+                    moved = np.any(y != z, axis=1)
+                    ly = ll.copy()
+                    if moved.any():
+                        if folds == 1:
+                            ly[moved] = full(y[moved])
+                        else:
+                            ly[moved], proposed_payload = full(y[moved], cached=True)
+                    with np.errstate(invalid="ignore"):
+                        accept = moved & (np.log(rng.random(len(z))) <
+                                          beta * ((ly - sy) - (ll - sl)))
+                    accept &= np.isfinite(ly)
+                    z[accept], ll[accept], sl[accept] = y[accept], ly[accept], sy[accept]
+                    if folds >= 2 and accept.any():
+                        payload[accept] = proposed_payload[accept[moved]]
+                    outer_rate = accept.mean()
+                inner_accepts.append(rate)
+                outer_accepts.append(outer_rate)
+                lengths.append(n_inner)
+                rhos.append(rho)
+                c_inner = (1 - rate * (1 - np.sqrt(1 - rho**2)))**n_inner
+                corr_prod *= 1 - outer_rate * (1 - c_inner)
+                if folds == 1:
+                    rho = min(0.99, rho * np.exp(0.5 * (rate - 0.3)))
+                if folds == 1 and adaptive_steps and len(lengths) >= min(2, outer_steps) and corr_prod <= corr_target:
+                    break
+            if folds == 1 and stiff_index is not None and not use_stiff and np.mean(rhos) < 0.4:
+                use_stiff, rho = True, 0.5
+            corr_forecast += len(active) / n_particles * corr_prod
+            population[active], population_ll[active], population_payload[active] = z, ll, payload
+        z, ll, payload = population, population_ll, population_payload
         if beta == 1:
             final_z.append(z.copy())
             final_ll.append(ll.copy())
         info = dict(beta=beta, logz=float(logz), rho=float(rho),
-                    inner_accept=float(np.mean(inner_accepts)),
-                    outer_accept=float(np.mean(outer_accepts)),
-                    n_inner=float(np.mean(lengths)), n_outer=len(lengths), corr=float(corr_prod),
+                    n_parents=len(np.unique(idx)), n_unique=len(np.unique(z, axis=0)),
+                    inner_accept=float(np.mean(inner_accepts)) if inner_accepts else 0.0,
+                    outer_accept=float(np.mean(outer_accepts)) if outer_accepts else 0.0,
+                    n_inner=float(np.mean(lengths)) if lengths else 0.0, n_outer=len(lengths) / len(groups),
+                    corr=float(corr_forecast),
                     n_evals=counts[0], n_cheap_evals=counts[1],
                     median_loglike=float(np.median(ll)),
                     seconds=time.monotonic() - start)

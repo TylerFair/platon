@@ -3,7 +3,9 @@
 27 free parameters: Rp, Mp, per-sector Guillot beta/log_gamma, cloud deck
 and haze, shared log_k_th and T_int, sector1 fraction, excess noise, one
 stellar heterogeneity, T_star and 8 gases.  MultiNest needed ~1.8e8
-likelihood calls for this retrieval.
+likelihood calls for this retrieval. SMC defaults to sequential two-fold
+cross-fitting with fixed 60 inner / 12 outer moves. For a biased legacy
+comparison, pass folds=1, adaptive_steps=True.
 
     python retrieve_toi6894_smc.py [spectrum.csv]
 """

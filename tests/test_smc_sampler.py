@@ -4,10 +4,58 @@ from unittest import mock
 import numpy as np
 from scipy.special import logsumexp, ndtr, ndtri
 
-from platon.smc_sampler import GaussianModel, _StiffMap, run_smc
+from platon.smc_sampler import GaussianModel, _StiffMap, _resampling_folds, run_smc
 
 
 class TestSMC(unittest.TestCase):
+    def test_crossfit_validation_and_families(self):
+        flat = lambda u: np.zeros(len(u))
+        for folds in (0, 17, 1.5):
+            with self.assertRaisesRegex(ValueError, 'folds'):
+                run_smc(flat, 2, n_particles=16, folds=folds)
+        with self.assertRaisesRegex(ValueError, 'complement'):
+            run_smc(flat, 6, n_particles=16)
+        z = np.array([[0.], [0.], [1.], [2.]])
+        parents = np.array([0, 1, 1, 2, 3, 3])
+        groups = _resampling_folds(z, parents, 2, np.random.default_rng(3))
+        self.assertTrue(any(set([0, 1, 2]).issubset(g) for g in groups))
+        self.assertTrue(any(set([4, 5]).issubset(g) for g in groups))
+
+    def test_crossfit_exact_start_stationarity(self):
+        # Constant likelihood leaves the initial iid normal ensemble exact.
+        # Use the validated 60/12 budget: shortening chains weakens the
+        # fitted-on-self contraction signal. Ensemble SE is about .0025.
+        means = {1: [], 2: []}
+        for seed in range(24):
+            for folds in means:
+                result = run_smc(lambda u: np.zeros(len(u)), 27,
+                                 n_particles=512, inner_steps=60, outer_steps=12,
+                                 adaptive_steps=(folds == 1), folds=folds, seed=seed)
+                means[folds].append(np.mean(ndtri(result['samples'])**2))
+                self.assertEqual(result['history'][0]['n_parents'], 512)
+                self.assertEqual(result['history'][0]['n_unique'], 512)
+        self.assertAlmostEqual(np.mean(means[2]), 1, delta=.012)
+        self.assertLess(np.mean(means[1]), np.mean(means[2]) - .006)
+
+    def test_crossfit_freezes_objects_and_caches_predictions(self):
+        from platon import smc_sampler as smc
+        seen = []
+        def predict(u):
+            seen.extend(map(tuple, u))
+            return ndtri(u), np.ones_like(u)
+        full = GaussianModel(predict, [0., 0.])
+        cheap = GaussianModel(lambda u: (1.03 * ndtri(u) + .02, np.ones_like(u)), [0., 0.])
+        with mock.patch.object(smc, '_Reference', wraps=smc._Reference) as ref, \
+             mock.patch.object(smc, '_Correction', wraps=smc._Correction) as correction:
+            result = run_smc(full, 2, n_particles=128, cheap_loglike=cheap,
+                             inner_steps=2, outer_steps=3, seed=14)
+        self.assertEqual(ref.call_count, 2 * len(result['history']))
+        self.assertEqual(correction.call_count, ref.call_count)
+        self.assertEqual(len(seen), result['n_evals'])
+        for h in result['history']:
+            self.assertEqual(h['n_outer'], 3)
+            self.assertEqual(h['n_inner'], 2)
+
     def test_gaussian_evidence(self):
         mu, sd = np.array([0.7, -0.4]), np.array([0.5, 0.8])
 
@@ -74,9 +122,9 @@ class TestSMC(unittest.TestCase):
     def test_adaptive_lengths_avoid_excess_da_work(self):
         flat = lambda u: np.zeros(len(u))
         options = dict(cheap_loglike=flat, n_particles=512,
-                       inner_steps=25, outer_steps=8, seed=30)
+                       inner_steps=25, outer_steps=8, seed=30, folds=1)
         fixed = run_smc(flat, 2, adaptive_steps=False, **options)
-        adaptive = run_smc(flat, 2, **options)
+        adaptive = run_smc(flat, 2, adaptive_steps=True, **options)
         self.assertEqual(adaptive['logz'], 0)
         self.assertLess(adaptive['n_evals'], 0.6 * fixed['n_evals'])
         self.assertLess(adaptive['n_cheap_evals'], 0.25 * fixed['n_cheap_evals'])

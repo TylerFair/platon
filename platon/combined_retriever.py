@@ -975,7 +975,7 @@ class CombinedRetriever:
                 n_particles=512, cheap_downsample=None,
                 inner_steps=60, outer_steps=12, seed=None,
                 num_final_samples=100, zero_opacities=[], batched=True,
-                batch_size=64, **smc_kwargs):
+                batch_size=64, folds=2, **smc_kwargs):
         """Run adaptive tempered SMC with optional delayed acceptance.
 
         ``cheap_downsample`` limits the transit model to this many opacity
@@ -983,7 +983,8 @@ class CombinedRetriever:
         model determines the posterior and evidence. ``batched=False`` uses
         scalar evaluations for debugging; ``batch_size`` sets the fixed device
         chunk size, independent of population size. Extra options go to
-        ``smc_sampler.run_smc``.
+        ``smc_sampler.run_smc``. ``folds=2`` uses sequential complement fitting;
+        ``folds=1`` retains biased population fitting for comparison.
         """
         from .smc_sampler import GaussianModel, run_smc
 
@@ -1045,7 +1046,7 @@ class CombinedRetriever:
             model(transit_calc), fit_info._get_num_fit_params(),
             n_particles=n_particles,
             cheap_loglike=model(cheap_calc) if cheap_calc is not None else None,
-            inner_steps=inner_steps, outer_steps=outer_steps, seed=seed, **smc_kwargs)
+            inner_steps=inner_steps, outer_steps=outer_steps, seed=seed, folds=folds, **smc_kwargs)
         samples = np.array([fit_info._from_unit_interval_array(u)
                             for u in result["samples"]])
         logl = result["samples_loglike"]
