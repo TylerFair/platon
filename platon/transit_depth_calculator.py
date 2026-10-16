@@ -198,7 +198,9 @@ class TransitDepthCalculator:
             atm_abundances, unbinned_depths, unbinned_wavelengths,
             unbinned_correction_factors.  unbinned_depths are already
             corrected for stellar spots (multiplied by
-            unbinned_correction_factors).
+            unbinned_correction_factors).  TwoSectorTerminator also returns
+            binned cold_depths and hot_depths, even if full_output is False
+            (unless cold_fraction is 0 or 1).
        '''
         hets = [T_star if T_het is None else T_het, 0 if het_cov_frac is None else het_cov_frac,
                 T_star if T_het2 is None else T_het2, 0 if het2_cov_frac is None else het2_cov_frac]
@@ -214,6 +216,9 @@ class TransitDepthCalculator:
                 visit = np.all(rows == row, axis=1)
                 depths[visit] = visit_depths[visit]
                 info = visit_info if i == 0 else info
+                for name in ("cold_depths", "hot_depths"):
+                    if info is not None and name in info:
+                        info[name][visit] = visit_info[name][visit]
             return wavelengths, depths, info
 
         if isinstance(t_p_profile, TwoSectorTerminator):
@@ -258,7 +263,7 @@ class TransitDepthCalculator:
             _, hot_depths, hot_info = run_sector(t_p_profile.hot)
             depths = fraction * cold_depths + (1 - fraction) * hot_depths
             if not full_output:
-                return cold_wavelengths, depths, None
+                return cold_wavelengths, depths, {"cold_depths": cold_depths, "hot_depths": hot_depths}
 
             info = {
                 name: cold_info[name]
@@ -271,6 +276,7 @@ class TransitDepthCalculator:
                 fraction * cold_info["unbinned_depths"] + \
                 (1 - fraction) * hot_info["unbinned_depths"]
             info["cold_fraction"] = fraction
+            info["cold_depths"], info["hot_depths"] = cold_depths, hot_depths
             info["sectors"] = {"cold": cold_info, "hot": hot_info}
             return cold_wavelengths, depths, info
 

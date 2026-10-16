@@ -201,6 +201,62 @@ when the wavelength coverage and precision can distinguish the sector
 spectra.  PLATON samples the free fraction explicitly; it does not marginalize
 over it analytically.
 
+Fitting a time-shift spectrum
+=============================
+
+A spherical light-curve model (e.g. batman), fitted separately in each wavelength
+bin with a free mid-transit time, measures a depth and a time-shift spectrum.
+Keep :math:`a/R_\star`, inclination and period fixed to the white-light solution.
+The shifts are fitted mid-transit times minus a reference time, in seconds;
+positive means later.  Fit them together with the depths from the same bins and
+light-curve fits.  A larger trailing limb gives a positive atmospheric shift.
+
+For leading and trailing limb depths :math:`D_L,D_T`, PLATON uses the mean depth
+and the prescription of `Murphy, Beatty & Apai (2024)
+<https://arxiv.org/abs/2407.17564>`_ and `Mukherjee et al. (2026)
+<https://arxiv.org/abs/2610.22271>`_:
+
+.. math::
+
+   R_L = \sqrt{D_L},\quad R_T = \sqrt{D_T},\quad
+   R_\mathrm{eff} = \sqrt{(D_L+D_T)/2},\quad x(R)=\sqrt{(1+R)^2-b^2},
+
+   \tau = \left[\frac{x(R_T)-x(R_L)}{2}
+          + \frac{\sqrt{1-R_L^2}-\sqrt{1-R_\mathrm{eff}^2}}{2}\right]
+          \frac{R_\star P}{2\pi a}(1.221+0.079b-0.718b^2).
+
+Supply ``Rs`` and ``a`` in metres, ``period`` in seconds, and impact parameter
+``b``.  Keep ``sector1.fraction`` fixed at 0.5.  Here ``sector1`` is the leading
+(morning) limb and ``sector2`` the trailing (evening) limb; posterior labels
+become ``morning.`` and ``evening.`` without sorting by temperature.
+``TwoSectorTerminator(..., cold_leads=False)`` puts the hot limb first instead.
+The binned limb depths are ``info["cold_depths"]`` and ``info["hot_depths"]``,
+available even with ``full_output=False``.
+
+Fit one time offset per visit/instrument unless the true mid-transit time is
+known independently.  Each offset is the true time minus that range's reference
+time, in seconds, and is added to the model.  With an offset, only the chromatic
+variation of the shift is informative::
+
+  fit_info = retriever.get_default_fit_info(
+      Rs=Rs, Mp=Mp, Rp=Rp, transit_terminator=terminator,
+      time_shifts=time_shifts, time_shift_errors=time_shift_errors,
+      a=0.047 * AU, period=3.52 * 86400, b=0.5,
+      time_shift_offsets={"t0_offset": (0, len(depths))})
+  for sector in ("sector1", "sector2"):
+      fit_info.add_uniform_fit_param(sector + ".T", 300, 3000)
+  fit_info.add_uniform_fit_param("t0_offset", -100, 100)
+  result = retriever.run_dynesty(
+      bins, depths, errors, None, None, None, fit_info)
+  model_shifts = result.best_fit_transit_dict["time_shifts"]
+
+:download:`Download the complete time-shift retrieval example
+<../examples/retrieve_time_shifts.py>`.
+
+This prescription assumes a circular orbit and two half-disk limbs; the impact
+parameter calibration is valid for :math:`0 \le b \le 0.8`.  Stellar flares,
+spot crossings and instrumental tilt events can also shift mid-transit times.
+
 Limitations
 ===========
 

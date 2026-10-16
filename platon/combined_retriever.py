@@ -20,7 +20,7 @@ from ._params import _UniformParam
 from .errors import AtmosphereError
 from ._output_writer import write_param_estimates_file
 from .TP_profile import Profile
-from .terminator import TwoSectorTerminator, label_by_temperature
+from .terminator import TwoSectorTerminator, label_by_temperature, limb_time_shifts
 from .retrieval_result import RetrievalResult
 from .custom_dynesty_result import CustomDynestyResult
 
@@ -69,6 +69,10 @@ class CombinedRetriever:
         terminator_param = fit_info.all_params.get("transit_terminator")
         terminator = None if terminator_param is None else \
             terminator_param.best_guess
+
+        if fit_info._get("time_shifts") is not None and (terminator is None or
+                "sector1.fraction" in fit_info.fit_param_names or fit_info._get("sector1.fraction") != 0.5):
+            raise ValueError("time_shifts require a transit_terminator with sector1.fraction fixed at 0.5")
 
         if terminator is not None:
             cloud_fraction = fit_info.all_params["cloud_fraction"].best_guess
@@ -153,7 +157,7 @@ class CombinedRetriever:
     @staticmethod
     def _apply_offsets(depths, params_dict, kind):
         """Adds each named offset in params_dict[kind + "_offsets"] (kind is
-        "transit" or "eclipse") to its index range of the calculated depths,
+        "transit", "eclipse" or "time_shift") to its index range of the model,
         in place."""
         offsets = params_dict.get(kind + "_offsets")
         if offsets is not None:
@@ -289,6 +293,18 @@ class CombinedRetriever:
                 residuals = calculated_transit_depths - measured_transit_depths
                 scaled_errors = np.sqrt(measured_transit_errors**2 + error_excess**2)
                 ln_likelihood = np.append(ln_likelihood, -0.5 * (residuals**2 / scaled_errors**2 + np.log(2 * np.pi * scaled_errors**2)))
+
+                if params_dict.get("time_shifts") is not None:
+                    leading, trailing = transit_info_dict["cold_depths"], transit_info_dict["hot_depths"]
+                    if not transit_profile.cold_leads:
+                        leading, trailing = trailing, leading
+                    shifts = limb_time_shifts(leading, trailing, Rs, params_dict["a"], params_dict["period"], params_dict["b"])
+                    self._apply_offsets(shifts, params_dict, "time_shift")
+                    residuals = shifts - params_dict["time_shifts"]
+                    errors = params_dict["time_shift_errors"]
+                    ln_likelihood = np.append(ln_likelihood, -0.5 * (residuals**2 / errors**2 + np.log(2 * np.pi * errors**2)))
+                    if ret_best_fit:
+                        transit_info_dict["time_shifts"] = shifts
                 
             if measured_eclipse_depths is not None:
                 if params_dict["profile_type"] == "isothermal" and T is None:
@@ -943,6 +959,8 @@ class CombinedRetriever:
                              transit_terminator=None,
                              stellar_grid=None, logg_star=4.5, feh_star=0.,
                              transit_visits=None,
+                             time_shifts=None, time_shift_errors=None, period=None, b=None,
+                             time_shift_offsets=None,
                              **profile_kwargs):
         '''Get a :class:`.FitInfo` object filled with best guess values.  A few
         parameters are required, but others can be set to default values if you
@@ -982,6 +1000,19 @@ class CombinedRetriever:
         eclipse_offsets : dict, optional
             Same as above, but for eclipse depths.  A name may appear in
             both transit_offsets and eclipse_offsets to share one offset.
+        time_shifts, time_shift_errors : array, optional
+            Fitted mid-transit times minus a reference time, and their errors,
+            in seconds, one per transit point from the same bins and light-curve
+            fits as the depths.  Require transit_terminator with sector1.fraction
+            fixed at 0.5; sector1 is leading (morning), sector2 trailing (evening).
+            Also require Rs and a (semi-major axis in m, passed as a keyword,
+            as for Guillot profiles), period and b.
+        period, b : float, optional
+            Orbital period in seconds and impact parameter for time shifts.
+        time_shift_offsets : dict, optional
+            Like transit_offsets, in seconds, added to model shifts.  Each is
+            the true mid-transit time minus the reference time for its range;
+            fit it unless the reference is the true mid-transit time.
         profile_type : string
             "isothermal", "parametric" (Madhusudhan & Seager 2009),
             "radiative_solution" (Line et al 2013), or "guillot" (Guillot
@@ -1047,7 +1078,8 @@ class CombinedRetriever:
 
         offset_names = set()
         for kind, offsets in (("transit", transit_offsets),
-                              ("eclipse", eclipse_offsets)):
+                              ("eclipse", eclipse_offsets),
+                              ("time_shift", time_shift_offsets)):
             if offsets is None:
                 continue
             for name, index_range in offsets.items():

@@ -8,6 +8,18 @@ from .TP_profile import Profile
 GUILLOT_SHARED_PARAMS = ("T_star", "Rs", "a", "Mp", "Rp", "log_k_th", "T_int")
 
 
+def limb_time_shifts(leading_depths, trailing_depths, Rs, a, period, b):
+    """Mid-transit time shifts (s, positive = later) that a spherical-planet
+    light-curve fit measures for leading (morning) and trailing (evening)
+    half-disks with these transit depths: Murphy et al. (2024) eqs. 11 and 20,
+    calibrated in impact parameter b by Mukherjee et al. (2026) eq. 3."""
+    R_L, R_T = np.sqrt(leading_depths), np.sqrt(trailing_depths)
+    R_eff = np.sqrt((np.asarray(leading_depths) + trailing_depths) / 2)
+    shift = (np.sqrt((1 + R_T)**2 - b**2) - np.sqrt((1 + R_L)**2 - b**2)) / 2
+    shift += (np.sqrt(1 - R_L**2) - np.sqrt(1 - R_eff**2)) / 2
+    return shift * Rs * period / (2 * np.pi * a) * (1.221 + 0.079 * b - 0.718 * b**2)
+
+
 @dataclass(frozen=True)
 class TerminatorSector:
     """One homogeneous sector of a two-sector terminator."""
@@ -37,11 +49,14 @@ def sector_temperature(profile):
 class TwoSectorTerminator:
     """A cold and hot terminator sector combined by projected area.
     Retrievals sample the two sectors as sector1 and sector2 with independent
-    priors; each sample's colder sector is then labelled cold."""
+    priors; each sample's colder sector is then labelled cold.  cold_leads
+    says whether the cold sector is the leading (morning) limb, which matters
+    only for time shifts."""
 
     cold: TerminatorSector
     hot: TerminatorSector
     cold_fraction: float = 0.5
+    cold_leads: bool = True
 
     def __post_init__(self):
         if not isinstance(self.cold, TerminatorSector) or \
@@ -74,12 +89,13 @@ class TwoSectorTerminator:
 
     def retrieval_defaults(self):
         """Return the named values used to reconstruct this terminator, with
-        the cold sector as sector1 and the hot one as sector2."""
+        the leading (morning) sector as sector1 and the trailing one as sector2."""
         values = {
             "transit_terminator": self,
-            "sector1.fraction": self.cold_fraction,
+            "sector1.fraction": self.cold_fraction if self.cold_leads else 1 - self.cold_fraction,
         }
-        for label, sector in (("sector1", self.cold), ("sector2", self.hot)):
+        sectors = (self.cold, self.hot) if self.cold_leads else (self.hot, self.cold)
+        for label, sector in zip(("sector1", "sector2"), sectors):
             values[f"{label}.log_cloudtop_P"] = np.log10(
                 sector.cloudtop_pressure)
             values[f"{label}.log_scatt_factor"] = np.log10(
@@ -124,11 +140,11 @@ class TwoSectorTerminator:
 
     def from_params(self, params):
         """Build a terminator from a retrieval parameter dictionary, with the
-        colder of sector1 and sector2 as the cold sector."""
+        colder of sector1 and sector2 as cold; sector1 is the leading limb."""
         first, second = self.sectors_from_params(params)
         fraction = params["sector1.fraction"]
         if sector_temperature(first.profile) > sector_temperature(second.profile):
-            return TwoSectorTerminator(second, first, 1 - fraction)
+            return TwoSectorTerminator(second, first, 1 - fraction, cold_leads=False)
         return TwoSectorTerminator(first, second, fraction)
 
 
@@ -138,6 +154,9 @@ def label_by_temperature(fit_info, samples):
     cold_fraction).  Returns (names, samples).  A parameter fitted for only
     one sector keeps its sector name."""
     names = list(fit_info.fit_param_names)
+    if "time_shifts" in fit_info.all_params and fit_info._get("time_shifts") is not None:
+        return [name.replace("sector1.", "morning.").replace("sector2.", "evening.")
+                for name in names], samples
     param = fit_info.all_params.get("transit_terminator")
     if param is None or param.best_guess is None:
         return names, samples

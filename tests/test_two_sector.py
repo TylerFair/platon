@@ -5,7 +5,7 @@ from scipy.special import expn
 
 from platon.constants import AU, G, M_jup, R_jup, R_sun
 from platon.fit_info import FitInfo
-from platon.terminator import TerminatorSector, TwoSectorTerminator
+from platon.terminator import TerminatorSector, TwoSectorTerminator, limb_time_shifts
 from platon.TP_profile import Profile
 from platon.transit_depth_calculator import TransitDepthCalculator
 
@@ -25,6 +25,18 @@ def guillot(beta, log_gamma, log_k_th=-2, T_int=150, Rs=R_sun):
 
 
 class TestTwoSectorTypes(unittest.TestCase):
+    def test_limb_time_shifts(self):
+        depths = np.array([0.01, 0.0144])
+        np.testing.assert_array_equal(
+            limb_time_shifts(depths, depths, 7e8, 7e9, 259200, 0.4), 0)
+        shifts = limb_time_shifts(depths, depths[::-1], 7e8, 7e9, 259200, 0.4)
+        self.assertGreater(shifts[0], 0)
+        self.assertLess(shifts[1], 0)
+        expected = ((np.sqrt(1.12**2 - 0.16) - np.sqrt(1.1**2 - 0.16)) / 2
+                    + (np.sqrt(0.99) - np.sqrt(0.9878)) / 2)
+        expected *= 7e8 * 259200 / (2 * np.pi * 7e9) * 1.13772
+        self.assertAlmostEqual(shifts[0], expected)
+
     def test_guillot_equation_and_units(self):
         beta = 1.1
         log_gamma = -1
@@ -92,6 +104,13 @@ class TestTwoSectorTypes(unittest.TestCase):
         self.assertEqual(rebuilt.cold_fraction, 0.4)
         self.assertEqual(rebuilt.cold.cloudtop_pressure, 1e3)
         self.assertEqual(rebuilt.hot.scattering_factor, 0.1)
+        for cold_leads in (True, False):
+            model = TwoSectorTerminator(model.cold, model.hot, 0.4, cold_leads)
+            rebuilt = model.from_params(model.retrieval_defaults())
+            self.assertEqual(rebuilt.cold_leads, cold_leads)
+            self.assertAlmostEqual(rebuilt.cold_fraction, 0.4)
+            self.assertEqual(rebuilt.cold.cloudtop_pressure, 1e3)
+            self.assertEqual(rebuilt.hot.scattering_factor, 0.1)
 
     def test_cold_and_hot_are_ordered(self):
         with self.assertRaises(ValueError):
@@ -147,6 +166,7 @@ class TestTwoSectorTypes(unittest.TestCase):
         self.assertEqual(rebuilt.cold.cloudtop_pressure, 1e6)
         self.assertEqual(rebuilt.hot.scattering_factor, 10)
         self.assertAlmostEqual(rebuilt.cold_fraction, 0.7)
+        self.assertFalse(rebuilt.cold_leads)
 
         fit_info = CombinedRetriever.get_default_fit_info(
             R_sun, M_jup, R_jup, T=None, transit_terminator=model)
@@ -210,6 +230,8 @@ class TestTwoSectorForwardModel(unittest.TestCase):
             0.7 * hot_info["unbinned_depths"])
         self.assertEqual(info["cold_fraction"], 0.3)
         self.assertEqual(set(info["sectors"]), {"cold", "hot"})
+        np.testing.assert_allclose(info["cold_depths"], cold_depths)
+        np.testing.assert_allclose(info["hot_depths"], hot_depths)
         self.assertFalse(np.array_equal(
             info["sectors"]["cold"]["radii"],
             info["sectors"]["hot"]["radii"]))
@@ -297,6 +319,66 @@ class TestTwoSectorForwardModel(unittest.TestCase):
                 params, self.calculator, None, fit_info,
                 depths, errors, None, None)
             self.assertTrue(np.isfinite(log_likelihood))
+
+    def test_time_shift_retrieval(self):
+        from platon.combined_retriever import CombinedRetriever
+        from platon.terminator import label_by_temperature
+        retriever = CombinedRetriever()
+        for cold_leads in (True, False):
+            model = TwoSectorTerminator(
+                TerminatorSector(isothermal(900), 1e3),
+                TerminatorSector(isothermal(1400), 1e6), cold_leads=cold_leads)
+            _, depths, info = self.calculator.compute_depths(
+                model, self.Rs, self.Mp, self.Rp)
+            self.assertEqual(set(info), {"cold_depths", "hot_depths"})
+            leading, trailing = info["cold_depths"], info["hot_depths"]
+            if not cold_leads:
+                leading, trailing = trailing, leading
+            shifts = limb_time_shifts(leading, trailing, self.Rs, A_ORBIT, 259200, 0.4)
+            errors = np.full_like(depths, 1e-5)
+            fit_info = retriever.get_default_fit_info(
+                self.Rs, self.Mp, self.Rp, transit_terminator=model,
+                time_shifts=shifts + 7, time_shift_errors=np.ones_like(shifts),
+                a=A_ORBIT, period=259200, b=0.4,
+                transit_offsets={"depth_offset": (0, len(depths))},
+                time_shift_offsets={"t0_offset": (0, len(depths))})
+            for name in ("sector1.T", "sector2.T"):
+                fit_info.add_uniform_fit_param(name, 500, 2000)
+            fit_info.add_uniform_fit_param("t0_offset", -20, 20)
+            fit_info.all_params["depth_offset"].best_guess = 3e-5
+            retriever._validate_params(fit_info, self.calculator)
+            params = [fit_info._get(name) for name in fit_info.fit_param_names]
+            names, labelled = label_by_temperature(fit_info, [params])
+            self.assertEqual(names, ["morning.T", "evening.T", "t0_offset"])
+            np.testing.assert_array_equal(labelled, [params])
+            args = (self.calculator, None, fit_info, depths + 3e-5, errors, None, None)
+            wrong = retriever._ln_like(params, *args)
+            params[-1] = 7
+            truth = retriever._ln_like(params, *args)
+            self.assertTrue(np.isfinite(truth))
+            self.assertAlmostEqual(truth - wrong, len(shifts) * 7**2 / 2)
+            _, best, _, _ = retriever._ln_like(params, *args, ret_best_fit=True)
+            np.testing.assert_allclose(best["time_shifts"], shifts + 7)
+            fit_info.add_uniform_fit_param("sector1.fraction", 0, 1)
+            with self.assertRaises(ValueError):
+                retriever._validate_params(fit_info, self.calculator)
+
+    def test_time_shift_depths_per_visit(self):
+        model = TwoSectorTerminator(TerminatorSector(isothermal(900)),
+                                    TerminatorSector(isothermal(1400)))
+        args = (model, self.Rs, self.Mp, self.Rp)
+        _, first, first_info = self.calculator.compute_depths(
+            *args, T_star=5000, T_het=4000, het_cov_frac=0.1)
+        _, second, second_info = self.calculator.compute_depths(
+            *args, T_star=5000, T_het=4000, het_cov_frac=0.2)
+        for full_output in (False, True):
+            _, depths, info = self.calculator.compute_depths(
+                *args, T_star=5000, T_het=4000, het_cov_frac=[0.2, 0.1, 0.2],
+                full_output=full_output)
+            np.testing.assert_allclose(depths, [second[0], first[1], second[2]])
+            for name in ("cold_depths", "hot_depths"):
+                np.testing.assert_allclose(info[name], [second_info[name][0],
+                                           first_info[name][1], second_info[name][2]])
 
     def test_guillot_retrieval_likelihood(self):
         try:
