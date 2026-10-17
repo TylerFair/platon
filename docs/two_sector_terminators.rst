@@ -249,6 +249,17 @@ become ``morning.`` and ``evening.`` without sorting by temperature.
 The binned limb depths are ``info["cold_depths"]`` and ``info["hot_depths"]``,
 available even with ``full_output=False``.
 
+The prescription above is calibrated for batman fits as a function of ``b``
+only.  For the most accurate model, calibrate your own light-curve fits:
+inject a small radius difference between the two halves of the planet into
+each spectroscopic light curve, refit it exactly as the data were fitted, and
+record the change in mid-transit time per unit trailing-minus-leading radius
+(in seconds per stellar radius).  This accounts for each bin's limb darkening,
+time sampling and baseline.  For two half-disks the shift is antisymmetric in
+the two radii, so one coefficient per bin suffices.  Pass these as
+``time_shift_coefficients=coefficients``; the model shift is then
+``coefficients * (sqrt(D_T) - sqrt(D_L))``.
+
 Fit one time offset per visit/instrument unless the true mid-transit time is
 known independently.  Each offset is the true time minus that range's reference
 time, in seconds, and is added to the model.  With an offset, only the chromatic

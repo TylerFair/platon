@@ -303,7 +303,9 @@ class CombinedRetriever:
                     leading, trailing = transit_info_dict["cold_depths"], transit_info_dict["hot_depths"]
                     if not transit_profile.cold_leads:
                         leading, trailing = trailing, leading
-                    shifts = limb_time_shifts(leading, trailing, Rs, params_dict["a"], params_dict["period"], params_dict["b"])
+                    coefficients = params_dict.get("time_shift_coefficients")
+                    shifts = limb_time_shifts(leading, trailing, Rs, params_dict["a"], params_dict["period"], params_dict["b"]) \
+                        if coefficients is None else coefficients * (np.sqrt(trailing) - np.sqrt(leading))
                     self._apply_offsets(shifts, params_dict, "time_shift")
                     residuals = shifts - params_dict["time_shifts"]
                     errors = params_dict["time_shift_errors"]
@@ -965,7 +967,7 @@ class CombinedRetriever:
                              stellar_grid=None, logg_star=4.5, feh_star=0.,
                              transit_visits=None,
                              time_shifts=None, time_shift_errors=None, period=None, b=None,
-                             time_shift_offsets=None,
+                             time_shift_offsets=None, time_shift_coefficients=None,
                              **profile_kwargs):
         '''Get a :class:`.FitInfo` object filled with best guess values.  A few
         parameters are required, but others can be set to default values if you
@@ -1018,6 +1020,11 @@ class CombinedRetriever:
             Like transit_offsets, in seconds, added to model shifts.  Each is
             the true mid-transit time minus the reference time for its range;
             fit it unless the reference is the true mid-transit time.
+        time_shift_coefficients : array, optional
+            Calibrated shift per unit trailing-minus-leading radius, in s per
+            stellar radius, one per transit point (e.g. from injecting a small
+            limb asymmetry into the light-curve fits).  If given, these replace
+            the Mukherjee et al. (2026) prescription.
         profile_type : string
             "isothermal", "parametric" (Madhusudhan & Seager 2009),
             "radiative_solution" (Line et al 2013), or "guillot" (Guillot

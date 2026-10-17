@@ -455,6 +455,10 @@ class TestTwoSectorForwardModel(unittest.TestCase):
                 leading, trailing = trailing, leading
             np.testing.assert_allclose(best["time_shifts"],
                 limb_time_shifts(leading, trailing, self.Rs, A_ORBIT, 259200, 0.4) + 7)
+            fit_info.all_params["time_shift_coefficients"].best_guess = np.full(len(shifts), 1e4)
+            _, best, _, _ = retriever._ln_like(params, *args, ret_best_fit=True)
+            np.testing.assert_allclose(best["time_shifts"], 7 + 1e4 * (np.sqrt(trailing) - np.sqrt(leading)))
+            fit_info.all_params["time_shift_coefficients"].best_guess = None
             fit_info.add_uniform_fit_param("sector1.fraction", 0, 1)
             with self.assertRaises(ValueError):
                 retriever._validate_params(fit_info, self.calculator)
