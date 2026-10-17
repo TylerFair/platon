@@ -228,21 +228,25 @@ class CombinedRetriever:
                     ("sector1.fraction", "sector1.cloud_fraction", "sector2.cloud_fraction")):
                 return -np.inf
 
-        if params_dict["fit_vmr"]:
+        vmrs = None
+        gases = None
+        if params_dict["fit_vmr"] or params_dict["fit_clr"]:
             assert(logZ is None and CO_ratio is None)
             gases = fit_info.gases
-            vmrs = [10.**params_dict[f'log_{gas}'] for gas in gases[:-1]]
-            vmrs.append(1 - np.sum(vmrs))
-            if vmrs[-1] < 0: return -np.inf
-        elif params_dict["fit_clr"]:
-            assert(logZ is None and CO_ratio is None)
-            gases = fit_info.gases
-            clrs = [params_dict[f'clr_{gas}'] for gas in gases[:-1]]
-            vmrs = self.convert_clr_to_vmr(clrs)
-            if np.min(vmrs) < fit_info.clr_low_lim: return -np.inf
-        else:
-            vmrs = None
-            gases = None
+            per_sector = f'sector1.log_{gases[0]}' in params_dict or f'sector1.clr_{gases[0]}' in params_dict
+            if per_sector and measured_eclipse_depths is not None:
+                raise ValueError("Per-sector free abundances apply to transit depths only")
+            for prefix in ("sector1.", "sector2.") if per_sector else ("",):
+                if params_dict["fit_vmr"]:
+                    vmrs = [10.**params_dict[f'{prefix}log_{gas}'] for gas in gases[:-1]]
+                    vmrs.append(1 - np.sum(vmrs))
+                    if vmrs[-1] < 0: return -np.inf
+                else:
+                    clrs = [params_dict[f'{prefix}clr_{gas}'] for gas in gases[:-1]]
+                    vmrs = self.convert_clr_to_vmr(clrs)
+                    if np.min(vmrs) < fit_info.clr_low_lim: return -np.inf
+                if prefix:
+                    params_dict[prefix + "vmrs"] = vmrs
         if "n" in params_dict and params_dict["n"] is not None and "log_k" in params_dict:
             ri = params_dict["n"] - 1j * 10**params_dict["log_k"]
         else:

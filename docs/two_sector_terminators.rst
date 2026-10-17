@@ -276,8 +276,74 @@ spot crossings and instrumental tilt events can also shift mid-transit times.
 Limitations
 ===========
 
-The two sectors share their bulk composition and quench pressure, although
-equilibrium abundances are evaluated on each T/P profile.  The global
+The two sectors share equilibrium chemistry parameters and quench pressure,
+although equilibrium abundances are evaluated on each T/P profile.  Free
+abundances can be shared or fitted separately for each sector.  The global
 ``cloud_fraction`` must remain one; set cloud coverage on each sector.  This
 model is a compact description of an asymmetric terminator, not a circulation
 or horizontally coupled atmosphere model.
+
+Putting it together: a limb-resolved retrieval
+==============================================
+
+The design of `Mukherjee et al. (2026)
+<https://arxiv.org/abs/2610.22271>`_ combines depths and time shifts to constrain
+the two limbs.  Give each limb a Guillot profile, cloud deck, haze and cloud
+coverage so that these differences need not be absorbed into its abundances.
+Here ``bins``, ``depths``, ``errors``, ``time_shifts`` and ``time_shift_errors``
+are measured arrays in wavelength order, with two visits/instruments joined
+at ``n_first``.  Wavelengths are in metres and times in seconds::
+
+  from platon.constants import AU, M_jup, R_jup, R_sun
+  from platon.TP_profile import Profile
+  from platon.terminator import TerminatorSector, TwoSectorTerminator
+  from platon.combined_retriever import CombinedRetriever
+
+  Rs, Mp, Rp = R_sun, M_jup, R_jup
+  a, period, b = 0.05 * AU, 3.5 * 86400, 0.4
+  morning = TerminatorSector(
+      Profile.guillot(6000, Rs, a, Mp, Rp, 0.9, -2, -1, 150),
+      cloudtop_pressure=1e3, scattering_factor=10, scattering_slope=6,
+      cloud_fraction=0.6)
+  evening = TerminatorSector(
+      Profile.guillot(6000, Rs, a, Mp, Rp, 1.2, -2, -1, 150),
+      cloudtop_pressure=1e6, scattering_factor=1, scattering_slope=4,
+      cloud_fraction=0.3)
+  terminator = TwoSectorTerminator(morning, evening, cold_fraction=0.5)
+  retriever = CombinedRetriever()
+  fit_info = retriever.get_default_fit_info(
+      Rs, Mp, Rp, transit_terminator=terminator,
+      logZ=None, CO_ratio=None, fit_vmr=True,
+      time_shifts=time_shifts, time_shift_errors=time_shift_errors,
+      a=a, period=period, b=b,
+      time_shift_offsets={"t0_visit1": (0, n_first),
+                          "t0_visit2": (n_first, len(depths))},
+      transit_offsets={"depth_offset": (n_first, len(depths))})
+  fit_info.add_gases_vmr(
+      ["H2O", "CO", "CO2", "H2S", "K", "H2-He"], 1e-10, 0.1, per_sector=True)
+  for sector in ("sector1", "sector2"):
+      fit_info.add_uniform_fit_param(sector + ".beta", 0.6, 1.4)
+      fit_info.add_uniform_fit_param(sector + ".log_gamma", -2, 0)
+      fit_info.add_uniform_fit_param(sector + ".log_cloudtop_P", 2, 6)
+      fit_info.add_uniform_fit_param(sector + ".log_scatt_factor", -2, 4)
+      fit_info.add_uniform_fit_param(sector + ".scatt_slope", 0, 8)
+      fit_info.add_uniform_fit_param(sector + ".cloud_fraction", 0, 1)
+  for name in ("t0_visit1", "t0_visit2"):
+      fit_info.add_uniform_fit_param(name, -100, 100)
+  fit_info.add_uniform_fit_param("depth_offset", -2e-4, 2e-4)
+  result = retriever.run_multinest(
+      bins, depths, errors, None, None, None, fit_info, nlive=250)
+  model_depths = result.best_fit_transit_depths
+  model_shifts = result.best_fit_transit_dict["time_shifts"]
+
+``H2-He`` fills the remainder after the five fitted gases on each limb.  This
+free-chemistry mode applies to transits only; do not supply eclipse data.
+``sector1.fraction`` stays fixed at 0.5 for the two half-disk limbs.  The time
+offsets let each visit have its own reference epoch; the depth offset aligns
+the second instrument with the first, which is the depth reference.
+
+Inspect ``result.labels`` for ``morning.`` and ``evening.`` parameters,
+including each gas's log VMR.  These labels follow limb orientation even when
+the temperatures cross.  Compare the best-fit depths and
+``best_fit_transit_dict["time_shifts"]`` to both measured spectra; both outputs
+include their fitted offsets.  Use a converged sampler budget for inference.

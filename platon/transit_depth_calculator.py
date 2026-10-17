@@ -228,7 +228,7 @@ class TransitDepthCalculator:
                     "use each TerminatorSector's cloud_fraction")
             common = dict(
                 logZ=logZ, CO_ratio=CO_ratio, CH4_mult=CH4_mult,
-                gases=gases, vmrs=vmrs,
+                gases=gases,
                 add_gas_absorption=add_gas_absorption,
                 add_H_minus_absorption=add_H_minus_absorption,
                 add_scattering=add_scattering,
@@ -252,6 +252,7 @@ class TransitDepthCalculator:
                     scattering_slope=sector.scattering_slope,
                     cloudtop_pressure=sector.cloudtop_pressure,
                     cloud_fraction=sector.cloud_fraction,
+                    vmrs=sector.vmrs if sector.vmrs is not None else vmrs,
                     **common)
 
             fraction = t_p_profile.cold_fraction

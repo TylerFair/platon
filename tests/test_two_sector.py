@@ -260,6 +260,64 @@ class TestTwoSectorForwardModel(unittest.TestCase):
         np.testing.assert_array_equal(
             depths, 0.3 * info["cold_depths"] + 0.7 * info["hot_depths"])
 
+    def test_per_sector_vmrs(self):
+        gases = ["H2O", "CO", "H2"]
+        cold = TerminatorSector(isothermal(900), vmrs=[0.01, 0.001, 0.989])
+        hot = TerminatorSector(isothermal(1400), vmrs=[0.0001, 0.02, 0.9799])
+        model = TwoSectorTerminator(cold, hot, 0.3)
+        args = (self.Rs, self.Mp, self.Rp)
+        _, first, _ = self.calculator.compute_depths(
+            cold.profile, *args, logZ=None, CO_ratio=None, gases=gases, vmrs=cold.vmrs)
+        _, second, _ = self.calculator.compute_depths(
+            hot.profile, *args, logZ=None, CO_ratio=None, gases=gases, vmrs=hot.vmrs)
+        _, depths, _ = self.calculator.compute_depths(
+            model, *args, logZ=None, CO_ratio=None, gases=gases, vmrs=[0.001, 0.001, 0.998])
+        np.testing.assert_array_equal(depths, 0.3 * first + 0.7 * second)
+
+    def test_per_sector_free_retrieval(self):
+        from platon.combined_retriever import CombinedRetriever
+        from platon.terminator import label_by_temperature
+        retriever = CombinedRetriever()
+        gases = ["H2O", "CO", "H2"]
+        vmrs = np.array([[0.01, 0.001, 0.989], [0.0001, 0.02, 0.9799]])
+        model = TwoSectorTerminator(
+            TerminatorSector(isothermal(900), vmrs=vmrs[0]),
+            TerminatorSector(isothermal(1400), vmrs=vmrs[1]))
+        _, depths, _ = self.calculator.compute_depths(
+            model, self.Rs, self.Mp, self.Rp, logZ=None, CO_ratio=None, gases=gases)
+        for kind in ("log", "clr"):
+            fit_info = retriever.get_default_fit_info(
+                self.Rs, self.Mp, self.Rp, transit_terminator=model,
+                logZ=None, CO_ratio=None, fit_vmr=kind == "log", fit_clr=kind == "clr")
+            for name in ("sector1.T", "sector2.T"):
+                fit_info.add_uniform_fit_param(name, 500, 2000)
+            if kind == "log":
+                fit_info.add_gases_vmr(gases, 1e-8, 1, per_sector=True)
+                abundances = np.log10(vmrs[:, :-1])
+            else:
+                fit_info.add_gases_clr(gases, per_sector=True)
+                abundances = (np.log(vmrs) - np.log(vmrs).mean(axis=1)[:, None])[:, :-1]
+            params = np.r_[900, 1400, abundances.ravel()]
+            args = (self.calculator, None, fit_info, depths, np.full_like(depths, 1e-6), None, None)
+            retriever._validate_params(fit_info, self.calculator)
+            with self.assertRaisesRegex(ValueError, "transit depths only"):
+                retriever._ln_like(params, *args[:-2], depths, depths)
+            truth = retriever._ln_like(params, *args)
+            self.assertTrue(np.isfinite(truth))
+            swapped = np.r_[params[:2], abundances[::-1].ravel()]
+            self.assertLess(retriever._ln_like(swapped, *args), truth)
+            swapped[:2] = params[1::-1]
+            self.assertAlmostEqual(retriever._ln_like(swapped, *args), truth)
+            names, labelled = label_by_temperature(fit_info, [swapped])
+            self.assertEqual(names, ["cold.T", "hot.T"] + [
+                f"{label}.{kind}_{gas}" for label in ("cold", "hot") for gas in gases[:-1]])
+            np.testing.assert_allclose(labelled[0], params)
+            for start in (2, 4):
+                outside = params.copy()
+                outside[start:start + 2] = -0.1 if kind == "log" else -15
+                self.assertTrue(fit_info._within_limits(outside))
+                self.assertEqual(retriever._ln_like(outside, *args), -np.inf)
+
     def test_identical_and_endpoint_sectors(self):
         sector = TerminatorSector(isothermal(1100), 1e4, 3, 4)
         _, expected, _ = self.calculator.compute_depths(
@@ -359,8 +417,8 @@ class TestTwoSectorForwardModel(unittest.TestCase):
         retriever = CombinedRetriever()
         for cold_leads in (True, False):
             model = TwoSectorTerminator(
-                TerminatorSector(isothermal(900), 1e3),
-                TerminatorSector(isothermal(1400), 1e6), cold_leads=cold_leads)
+                TerminatorSector(isothermal(900), 1e3, cloud_fraction=0.6),
+                TerminatorSector(isothermal(1400), 1e6, cloud_fraction=0.3), cold_leads=cold_leads)
             _, depths, info = self.calculator.compute_depths(
                 model, self.Rs, self.Mp, self.Rp)
             self.assertEqual(set(info), {"cold_depths", "hot_depths"})
@@ -392,6 +450,11 @@ class TestTwoSectorForwardModel(unittest.TestCase):
             self.assertAlmostEqual(truth - wrong, len(shifts) * 7**2 / 2)
             _, best, _, _ = retriever._ln_like(params, *args, ret_best_fit=True)
             np.testing.assert_allclose(best["time_shifts"], shifts + 7)
+            leading, trailing = best["cold_depths"], best["hot_depths"]
+            if not cold_leads:
+                leading, trailing = trailing, leading
+            np.testing.assert_allclose(best["time_shifts"],
+                limb_time_shifts(leading, trailing, self.Rs, A_ORBIT, 259200, 0.4) + 7)
             fit_info.add_uniform_fit_param("sector1.fraction", 0, 1)
             with self.assertRaises(ValueError):
                 retriever._validate_params(fit_info, self.calculator)

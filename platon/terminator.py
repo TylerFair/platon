@@ -29,6 +29,7 @@ class TerminatorSector:
     scattering_factor: float = 1
     scattering_slope: float = 4
     cloud_fraction: float = 1
+    vmrs: list = None
 
     def __post_init__(self):
         if not isinstance(self.profile, Profile):
@@ -140,7 +141,8 @@ class TwoSectorTerminator:
                 10**params[f"{label}.log_cloudtop_P"],
                 10**params[f"{label}.log_scatt_factor"],
                 params[f"{label}.scatt_slope"],
-                params[f"{label}.cloud_fraction"]))
+                params[f"{label}.cloud_fraction"],
+                params.get(f"{label}.vmrs")))
         return sectors
 
     def from_params(self, params):
