@@ -71,10 +71,10 @@ class TwoSectorTerminator:
 
         kind = self.cold.profile.profile_type
         if kind != self.hot.profile.profile_type or \
-           kind not in ("isothermal", "guillot"):
+           kind not in ("isothermal", "guillot", "parametric"):
             raise ValueError(
-                "cold and hot profiles must use the same isothermal or "
-                "Guillot parameterization")
+                "cold and hot profiles must use the same isothermal, "
+                "Guillot or parametric parameterization")
 
         if sector_temperature(self.cold.profile) > sector_temperature(self.hot.profile):
             raise ValueError("cold profile must not be hotter than hot profile")
@@ -108,6 +108,11 @@ class TwoSectorTerminator:
             values[f"{label}.cloud_fraction"] = sector.cloud_fraction
             if self.profile_type == "isothermal":
                 values[f"{label}.T"] = sector.profile.profile_params["T"]
+            elif self.profile_type == "parametric":
+                for name, value in sector.profile.profile_params.items():
+                    if name in ("P1", "P3"):
+                        name, value = "log_" + name, np.log10(value)
+                    values[f"{label}.{name}"] = value
             else:
                 values[f"{label}.beta"] = \
                     sector.profile.profile_params["beta"]
@@ -128,6 +133,10 @@ class TwoSectorTerminator:
         for label in ("sector1", "sector2"):
             if self.profile_type == "isothermal":
                 profile = Profile.isothermal(params[f"{label}.T"])
+            elif self.profile_type == "parametric":
+                profile = Profile.from_params_dict("parametric", {
+                    name[len(label) + 1:]: value for name, value in params.items()
+                    if name.startswith(label + ".")})
             else:
                 profile = Profile.guillot(
                     params["T_star"], params["Rs"], params["a"],

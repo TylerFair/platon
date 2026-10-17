@@ -214,6 +214,36 @@ class TestTwoSectorForwardModel(unittest.TestCase):
         cls.calculator.change_wavelength_bins(
             1e-6 * np.array([[0.8, 1.0], [1.1, 1.4], [3.5, 4.5]]))
 
+    def test_parametric_retrieval(self):
+        from platon.combined_retriever import CombinedRetriever
+        model = TwoSectorTerminator(
+            TerminatorSector(Profile.parametric(900, 1e2, 1, 1, 1e6, 1500)),
+            TerminatorSector(Profile.parametric(1200, 1e2, 1, 1, 1e6, 1800)), 0.4)
+        defaults = model.retrieval_defaults()
+        self.assertEqual(defaults["sector1.log_P1"], 2)
+        self.assertEqual(defaults["sector2.log_P3"], 6)
+        for cold_leads in (True, False):
+            original = TwoSectorTerminator(model.cold, model.hot, 0.4, cold_leads)
+            rebuilt = model.from_params(original.retrieval_defaults())
+            self.assertEqual(rebuilt.cold_leads, cold_leads)
+            self.assertAlmostEqual(rebuilt.cold_fraction, 0.4)
+            for label in ("cold", "hot"):
+                np.testing.assert_array_equal(
+                    getattr(rebuilt, label).profile.temperatures,
+                    getattr(original, label).profile.temperatures)
+        retriever = CombinedRetriever()
+        fit_info = retriever.get_default_fit_info(
+            self.Rs, self.Mp, self.Rp, transit_terminator=model)
+        for label in ("sector1", "sector2"):
+            for name in ("T0", "log_P1", "alpha1", "alpha2", "log_P3", "T3"):
+                value = defaults[f"{label}.{name}"]
+                fit_info.add_uniform_fit_param(f"{label}.{name}", value * 0.9, value * 1.1)
+        retriever._validate_params(fit_info, self.calculator)
+        _, depths, _ = self.calculator.compute_depths(model, self.Rs, self.Mp, self.Rp)
+        self.assertTrue(np.isfinite(retriever._ln_like(
+            [defaults[name] for name in fit_info.fit_param_names],
+            self.calculator, None, fit_info, depths, np.full_like(depths, 1e-5), None, None)))
+
     def test_weighted_depths_and_full_output(self):
         cold = TerminatorSector(isothermal(900), 1e3, 100, 6, 0.3)
         hot = TerminatorSector(isothermal(1400), 1e6, 0.1, 2, 0.8)

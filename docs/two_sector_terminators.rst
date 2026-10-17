@@ -65,7 +65,10 @@ abundances, and optical depths.
 Using Guillot profiles
 ======================
 
-The same interface can use a Guillot profile instead of an isothermal one.
+The same interface can use a Guillot profile instead of an isothermal one, or
+the parametric profile of Madhusudhan & Seager (2009), for which each sector
+takes ``T0``, ``log_P1``, ``alpha1``, ``alpha2``, ``log_P3`` and ``T3`` (e.g.
+``sector1.T0``).
 As in the Line et al. (2013) profile, the irradiation temperature is
 :math:`\beta T_\star \sqrt{R_\star/2a}`, where ``beta`` absorbs the albedo
 and heat redistribution.  The thermal opacity ``log_k_th`` is in
