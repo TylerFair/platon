@@ -93,14 +93,16 @@ class TestTwoSectorTypes(unittest.TestCase):
 
     def test_retrieval_defaults_and_reconstruction(self):
         model = TwoSectorTerminator(
-            TerminatorSector(isothermal(900), 1e3, 10, 6),
-            TerminatorSector(isothermal(1400), 1e6, 0.1, 2),
+            TerminatorSector(isothermal(900), 1e3, 10, 6, 0.3),
+            TerminatorSector(isothermal(1400), 1e6, 0.1, 2, 0.8),
             0.4)
         defaults = model.retrieval_defaults()
         rebuilt = model.from_params(defaults)
 
         self.assertEqual(defaults["sector1.T"], 900)
         self.assertEqual(defaults["sector2.T"], 1400)
+        self.assertEqual(defaults["sector1.cloud_fraction"], 0.3)
+        self.assertEqual(defaults["sector2.cloud_fraction"], 0.8)
         self.assertEqual(rebuilt.cold_fraction, 0.4)
         self.assertEqual(rebuilt.cold.cloudtop_pressure, 1e3)
         self.assertEqual(rebuilt.hot.scattering_factor, 0.1)
@@ -111,6 +113,8 @@ class TestTwoSectorTypes(unittest.TestCase):
             self.assertAlmostEqual(rebuilt.cold_fraction, 0.4)
             self.assertEqual(rebuilt.cold.cloudtop_pressure, 1e3)
             self.assertEqual(rebuilt.hot.scattering_factor, 0.1)
+            self.assertEqual(rebuilt.cold.cloud_fraction, 0.3)
+            self.assertEqual(rebuilt.hot.cloud_fraction, 0.8)
 
     def test_cold_and_hot_are_ordered(self):
         with self.assertRaises(ValueError):
@@ -156,8 +160,8 @@ class TestTwoSectorTypes(unittest.TestCase):
         from platon.combined_retriever import CombinedRetriever
         from platon.terminator import label_by_temperature
         model = TwoSectorTerminator(
-            TerminatorSector(isothermal(900), 1e3, 10, 6),
-            TerminatorSector(isothermal(1400), 1e6, 0.1, 2), 0.3)
+            TerminatorSector(isothermal(900), 1e3, 10, 6, 0.3),
+            TerminatorSector(isothermal(1400), 1e6, 0.1, 2, 0.8), 0.3)
         params = model.retrieval_defaults()
         # sector1 hotter: the whole sector moves, with its share
         params.update({"sector1.T": 1600., "sector2.T": 800.})
@@ -165,6 +169,8 @@ class TestTwoSectorTypes(unittest.TestCase):
         self.assertEqual(rebuilt.cold.profile.profile_params["T"], 800.)
         self.assertEqual(rebuilt.cold.cloudtop_pressure, 1e6)
         self.assertEqual(rebuilt.hot.scattering_factor, 10)
+        self.assertEqual(rebuilt.cold.cloud_fraction, 0.8)
+        self.assertEqual(rebuilt.hot.cloud_fraction, 0.3)
         self.assertAlmostEqual(rebuilt.cold_fraction, 0.7)
         self.assertFalse(rebuilt.cold_leads)
 
@@ -175,12 +181,16 @@ class TestTwoSectorTypes(unittest.TestCase):
         fit_info.add_uniform_fit_param("sector1.fraction", 0, 1)
         fit_info.add_uniform_fit_param("sector1.log_cloudtop_P", 0, 7)
         fit_info.add_uniform_fit_param("sector2.log_cloudtop_P", 0, 7)
+        fit_info.add_uniform_fit_param("sector1.cloud_fraction", 0, 1)
+        fit_info.add_uniform_fit_param("sector2.cloud_fraction", 0, 1)
         names, labelled = label_by_temperature(
-            fit_info, [[800., 2000., .2, 2., 5.], [2500., 1000., .9, 4., 6.]])
+            fit_info, [[800., 2000., .2, 2., 5., .3, .8],
+                       [2500., 1000., .9, 4., 6., .3, .8]])
         self.assertEqual(names, ["cold.T", "hot.T", "cold_fraction",
-                                 "cold.log_cloudtop_P", "hot.log_cloudtop_P"])
-        np.testing.assert_allclose(labelled, [[800., 2000., .2, 2., 5.],
-                                              [1000., 2500., .1, 6., 4.]])
+                                 "cold.log_cloudtop_P", "hot.log_cloudtop_P",
+                                 "cold.cloud_fraction", "hot.cloud_fraction"])
+        np.testing.assert_allclose(labelled, [[800., 2000., .2, 2., 5., .3, .8],
+                                              [1000., 2500., .1, 6., 4., .8, .3]])
 
     def test_guillot_sectors_are_compared_by_temperature_not_beta(self):
         from platon.terminator import sector_temperature
@@ -205,18 +215,20 @@ class TestTwoSectorForwardModel(unittest.TestCase):
             1e-6 * np.array([[0.8, 1.0], [1.1, 1.4], [3.5, 4.5]]))
 
     def test_weighted_depths_and_full_output(self):
-        cold = TerminatorSector(isothermal(900), 1e3, 100, 6)
-        hot = TerminatorSector(isothermal(1400), 1e6, 0.1, 2)
+        cold = TerminatorSector(isothermal(900), 1e3, 100, 6, 0.3)
+        hot = TerminatorSector(isothermal(1400), 1e6, 0.1, 2, 0.8)
         model = TwoSectorTerminator(cold, hot, 0.3)
 
         _, cold_depths, cold_info = self.calculator.compute_depths(
             cold.profile, self.Rs, self.Mp, self.Rp,
             cloudtop_pressure=cold.cloudtop_pressure,
+            cloud_fraction=cold.cloud_fraction,
             scattering_factor=cold.scattering_factor,
             scattering_slope=cold.scattering_slope, full_output=True)
         _, hot_depths, hot_info = self.calculator.compute_depths(
             hot.profile, self.Rs, self.Mp, self.Rp,
             cloudtop_pressure=hot.cloudtop_pressure,
+            cloud_fraction=hot.cloud_fraction,
             scattering_factor=hot.scattering_factor,
             scattering_slope=hot.scattering_slope, full_output=True)
         _, depths, info = self.calculator.compute_depths(
@@ -235,6 +247,18 @@ class TestTwoSectorForwardModel(unittest.TestCase):
         self.assertFalse(np.array_equal(
             info["sectors"]["cold"]["radii"],
             info["sectors"]["hot"]["radii"]))
+        _, depths, info = self.calculator.compute_depths(
+            model, self.Rs, self.Mp, self.Rp)
+        for sector, name in ((cold, "cold_depths"), (hot, "hot_depths")):
+            _, expected, _ = self.calculator.compute_depths(
+                sector.profile, self.Rs, self.Mp, self.Rp,
+                cloudtop_pressure=sector.cloudtop_pressure,
+                cloud_fraction=sector.cloud_fraction,
+                scattering_factor=sector.scattering_factor,
+                scattering_slope=sector.scattering_slope)
+            np.testing.assert_array_equal(info[name], expected)
+        np.testing.assert_array_equal(
+            depths, 0.3 * info["cold_depths"] + 0.7 * info["hot_depths"])
 
     def test_identical_and_endpoint_sectors(self):
         sector = TerminatorSector(isothermal(1100), 1e4, 3, 4)
@@ -296,8 +320,8 @@ class TestTwoSectorForwardModel(unittest.TestCase):
             self.skipTest(str(error))
 
         model = TwoSectorTerminator(
-            TerminatorSector(isothermal(900), 1e3, 10, 6),
-            TerminatorSector(isothermal(1400), 1e6, 1, 4), 0.5)
+            TerminatorSector(isothermal(900), 1e3, 10, 6, 0.3),
+            TerminatorSector(isothermal(1400), 1e6, 1, 4, 0.8), 0.5)
         _, depths, _ = self.calculator.compute_depths(
             model, self.Rs, self.Mp, self.Rp)
         errors = np.full_like(depths, 1e-5)
@@ -311,6 +335,8 @@ class TestTwoSectorForwardModel(unittest.TestCase):
             fit_info.add_uniform_fit_param("sector2.T", 500, 2000)
             if fit_fraction:
                 fit_info.add_uniform_fit_param("sector1.fraction", 0, 1)
+            for name in ("sector1.cloud_fraction", "sector2.cloud_fraction"):
+                fit_info.add_gaussian_fit_param(name, 0.2)
             retriever._validate_params(fit_info, self.calculator)
             params = np.array([
                 fit_info.all_params[name].best_guess
@@ -319,6 +345,13 @@ class TestTwoSectorForwardModel(unittest.TestCase):
                 params, self.calculator, None, fit_info,
                 depths, errors, None, None)
             self.assertTrue(np.isfinite(log_likelihood))
+            for name in ("sector1.cloud_fraction", "sector2.cloud_fraction"):
+                for value in (-0.1, 1.1):
+                    outside = params.copy()
+                    outside[fit_info.fit_param_names.index(name)] = value
+                    self.assertEqual(retriever._ln_like(
+                        outside, self.calculator, None, fit_info,
+                        depths, errors, None, None), -np.inf)
 
     def test_time_shift_retrieval(self):
         from platon.combined_retriever import CombinedRetriever

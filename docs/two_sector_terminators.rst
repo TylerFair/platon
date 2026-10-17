@@ -186,6 +186,22 @@ temperature-profile plot draws the cold and hot posterior regions separately::
       result, filename="two_sector_corner.png")
   Plotter.plot_retrieval_TP_profiles(result, prefix="two_sector")
 
+Patchy clouds in each sector
+============================
+
+Each sector has its own ``cloud_fraction``, defaulting to one:
+
+.. math::
+
+   D_i = \phi_i D_i(\mathrm{cloudy}) + (1-\phi_i)D_i(\mathrm{clear}).
+
+The clear part has no cloud deck, parametric haze or Mie scattering; Rayleigh
+remains.  The two parts share one fused calculation, so this adds little cost.
+To fit both cloud fractions, add::
+
+  fit_info.add_uniform_fit_param("sector1.cloud_fraction", 0, 1)
+  fit_info.add_uniform_fit_param("sector2.cloud_fraction", 0, 1)
+
 Interpreting the fraction
 =========================
 
@@ -261,7 +277,7 @@ Limitations
 ===========
 
 The two sectors share their bulk composition and quench pressure, although
-equilibrium abundances are evaluated on each T/P profile.  Each sector is
-homogeneous, so the existing ``cloud_fraction`` option must remain one.  This
+equilibrium abundances are evaluated on each T/P profile.  The global
+``cloud_fraction`` must remain one; set cloud coverage on each sector.  This
 model is a compact description of an asymmetric terminator, not a circulation
 or horizontally coupled atmosphere model.

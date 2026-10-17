@@ -225,7 +225,7 @@ class TransitDepthCalculator:
             if cloud_fraction != 1:
                 raise ValueError(
                     "cloud_fraction must be 1 for a TwoSectorTerminator; "
-                    "use cold_fraction for its area weighting")
+                    "use each TerminatorSector's cloud_fraction")
             common = dict(
                 logZ=logZ, CO_ratio=CO_ratio, CH4_mult=CH4_mult,
                 gases=gases, vmrs=vmrs,
@@ -234,7 +234,7 @@ class TransitDepthCalculator:
                 add_scattering=add_scattering,
                 scattering_ref_wavelength=scattering_ref_wavelength,
                 add_collisional_absorption=add_collisional_absorption,
-                cloud_fraction=1, custom_abundances=custom_abundances,
+                custom_abundances=custom_abundances,
                 T_star=T_star, T_het=T_het, het_cov_frac=het_cov_frac,
                 T_het2=T_het2, het2_cov_frac=het2_cov_frac, ri=ri,
                 frac_scale_height=frac_scale_height,
@@ -251,6 +251,7 @@ class TransitDepthCalculator:
                     scattering_factor=sector.scattering_factor,
                     scattering_slope=sector.scattering_slope,
                     cloudtop_pressure=sector.cloudtop_pressure,
+                    cloud_fraction=sector.cloud_fraction,
                     **common)
 
             fraction = t_p_profile.cold_fraction

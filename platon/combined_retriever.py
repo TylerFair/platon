@@ -224,7 +224,8 @@ class CombinedRetriever:
         if cloud_fraction < 0 or cloud_fraction > 1:
             return -np.inf
         if transit_terminator is not None:
-            if cloud_fraction != 1 or not 0 <= params_dict["sector1.fraction"] <= 1:
+            if cloud_fraction != 1 or any(not 0 <= params_dict[name] <= 1 for name in
+                    ("sector1.fraction", "sector1.cloud_fraction", "sector2.cloud_fraction")):
                 return -np.inf
 
         if params_dict["fit_vmr"]:

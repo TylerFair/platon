@@ -22,12 +22,13 @@ def limb_time_shifts(leading_depths, trailing_depths, Rs, a, period, b):
 
 @dataclass(frozen=True)
 class TerminatorSector:
-    """One homogeneous sector of a two-sector terminator."""
+    """One sector of a two-sector terminator."""
 
     profile: Profile
     cloudtop_pressure: float = np.inf
     scattering_factor: float = 1
     scattering_slope: float = 4
+    cloud_fraction: float = 1
 
     def __post_init__(self):
         if not isinstance(self.profile, Profile):
@@ -36,6 +37,8 @@ class TerminatorSector:
             raise ValueError("cloudtop_pressure must be positive")
         if self.scattering_factor <= 0:
             raise ValueError("scattering_factor must be positive")
+        if not 0 <= self.cloud_fraction <= 1:
+            raise ValueError("cloud_fraction must be between 0 and 1")
 
 
 def sector_temperature(profile):
@@ -101,6 +104,7 @@ class TwoSectorTerminator:
             values[f"{label}.log_scatt_factor"] = np.log10(
                 sector.scattering_factor)
             values[f"{label}.scatt_slope"] = sector.scattering_slope
+            values[f"{label}.cloud_fraction"] = sector.cloud_fraction
             if self.profile_type == "isothermal":
                 values[f"{label}.T"] = sector.profile.profile_params["T"]
             else:
@@ -135,7 +139,8 @@ class TwoSectorTerminator:
                 profile,
                 10**params[f"{label}.log_cloudtop_P"],
                 10**params[f"{label}.log_scatt_factor"],
-                params[f"{label}.scatt_slope"]))
+                params[f"{label}.scatt_slope"],
+                params[f"{label}.cloud_fraction"]))
         return sectors
 
     def from_params(self, params):
