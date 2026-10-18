@@ -869,12 +869,13 @@ class CombinedRetriever:
         def transform_prior(cube):
             return fit_info._from_unit_interval_array(cube)
 
+        # No per-point cache: Nautilus makes millions of calls, and the final
+        # samples below recompute their pointwise likelihoods
         def nautilus_ln_like(params):
-            values = self._ln_like(
+            return self._ln_like(
                 params, transit_calc, eclipse_calc, fit_info,
                 transit_depths, transit_errors, eclipse_depths, eclipse_errors,
-                zero_opacities=zero_opacities, lnlike_per_point=True)
-            return values.sum() if not np.isscalar(values) else -np.inf
+                zero_opacities=zero_opacities)
 
         sampler = Sampler(
             transform_prior, nautilus_ln_like,
