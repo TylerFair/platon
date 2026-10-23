@@ -484,13 +484,16 @@ class CombinedRetriever:
         vmrs = None
         gases = None
         if params_dict["fit_vmr"] or params_dict["fit_clr"]:
-            assert(logZ is None and CO_ratio is None)
+            on_eq = logZ is not None and CO_ratio is not None and params_dict["fit_vmr"]
+            assert on_eq or (logZ is None and CO_ratio is None)
             gases = fit_info.gases
             per_sector = f'sector1.log_{gases[0]}' in params_dict or f'sector1.clr_{gases[0]}' in params_dict
             if per_sector and measured_eclipse_depths is not None:
                 raise ValueError("Per-sector free abundances apply to transit depths only")
             for prefix in ("sector1.", "sector2.") if per_sector else ("",):
-                if params_dict["fit_vmr"]:
+                if on_eq:
+                    vmrs = [10.**params_dict[f'{prefix}log_{gas}'] for gas in gases]
+                elif params_dict["fit_vmr"]:
                     vmrs = [10.**params_dict[f'{prefix}log_{gas}'] for gas in gases[:-1]]
                     vmrs.append(1 - np.sum(vmrs))
                     if vmrs[-1] < 0: return -np.inf

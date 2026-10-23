@@ -97,7 +97,7 @@ class ForwardConfig(NamedTuple):
     """Static (hashable) configuration; changing any field recompiles."""
     n_layers: int            # number of levels in the T/P profile
     abund_mode: str          # 'eq', 'vmr', or 'custom'
-    gas_master_idx: tuple    # master indices of fit gases ('vmr' mode)
+    gas_master_idx: tuple    # master indices of fit gases (vmr, or free in eq)
     ch4_idx: int
     el_idx: int
     h_idx: int
@@ -244,6 +244,9 @@ def _layer_log_abundances(cfg, data, sc, inp):
             inp.T_profile, jnp.log10(inp.P_profile))    # (N, M)
         if cfg.ch4_idx >= 0:
             la = la.at[:, cfg.ch4_idx].add(sc[SC_LOG_CH4])
+        if cfg.gas_master_idx:
+            la = la.at[:, jnp.asarray(cfg.gas_master_idx)].set(
+                jnp.log10(inp.vmrs)[None, :])
     elif cfg.abund_mode == "vmr":
         la = jnp.full((N, n_master), LOG_MIN_ABUND, dtype=jnp.float32)
         idx = jnp.asarray(cfg.gas_master_idx, dtype=jnp.int32)

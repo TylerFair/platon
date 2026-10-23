@@ -88,9 +88,12 @@ class FitInfo:
                 self.add_uniform_fit_param(f'{prefix}clr_{g}', clr_min, clr_max)
 
     def add_gases_vmr(self, gases, low_lim, high_lim, per_sector=False):
+        # With equilibrium chemistry (logZ set), every gas listed is a free,
+        # vertically constant VMR on top of it; otherwise the last gas fills
         self.gases = gases
+        on_eq = self._get("logZ") is not None
         for prefix in ("sector1.", "sector2.") if per_sector else ("",):
-            for g in gases[:-1]:
+            for g in gases if on_eq else gases[:-1]:
                 self.all_params[f'{prefix}log_{g}'] = _Param(np.log10(low_lim))
                 self.add_uniform_fit_param(f'{prefix}log_{g}', np.log10(low_lim), np.log10(high_lim))
         

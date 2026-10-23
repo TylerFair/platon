@@ -50,6 +50,10 @@ def prepare_forward_inputs(atm, *, star_radius, planet_mass, planet_radius,
     if custom_abundances is None and logZ is not None and CO_ratio is not None:
         abund_mode = "eq"
         active_species = list(atm.abundance_getter.included_species)
+        if gases is not None:
+            # Free, vertically constant VMRs replace these gases' equilibrium ones
+            gas_master_idx = tuple(int(atm.master_index[g]) for g in gases)
+            vmrs_arr = np.asarray(vmrs, dtype=np.float32)
     else:
         if logZ is not None or CO_ratio is not None:
             raise ValueError(

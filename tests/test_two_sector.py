@@ -348,6 +348,32 @@ class TestTwoSectorForwardModel(unittest.TestCase):
                 self.assertTrue(fit_info._within_limits(outside))
                 self.assertEqual(retriever._ln_like(outside, *args), -np.inf)
 
+    def test_per_sector_gases_on_equilibrium(self):
+        from platon.combined_retriever import CombinedRetriever
+        retriever = CombinedRetriever()
+        vmrs = np.array([[1e-2], [1e-8]])
+        model = TwoSectorTerminator(TerminatorSector(isothermal(900), vmrs=vmrs[0]),
+                                    TerminatorSector(isothermal(1400), vmrs=vmrs[1]))
+        args = (self.Rs, self.Mp, self.Rp)
+        _, depths, _ = self.calculator.compute_depths(model, *args, logZ=1, CO_ratio=0.5, gases=["SO2"])
+        sectors = [self.calculator.compute_depths(s.profile, *args, logZ=1, CO_ratio=0.5, gases=["SO2"],
+                                                  vmrs=s.vmrs)[1] for s in (model.cold, model.hot)]
+        np.testing.assert_array_equal(depths, 0.5 * sectors[0] + 0.5 * sectors[1])
+        _, equilibrium, _ = self.calculator.compute_depths(model.cold.profile, *args, logZ=1, CO_ratio=0.5)
+        self.assertGreater(np.max(np.abs(sectors[0] - equilibrium)), 1e-6)
+
+        fit_info = retriever.get_default_fit_info(
+            self.Rs, self.Mp, self.Rp, transit_terminator=model, logZ=1, CO_ratio=0.5, fit_vmr=True)
+        for name in ("sector1.T", "sector2.T"):
+            fit_info.add_uniform_fit_param(name, 500, 2000)
+        fit_info.add_gases_vmr(["SO2"], 1e-12, 1e-1, per_sector=True)
+        self.assertEqual(fit_info.fit_param_names[2:], ["sector1.log_SO2", "sector2.log_SO2"])
+        params = np.r_[900, 1400, np.log10(vmrs).ravel()]
+        lnlike = lambda p: retriever._ln_like(
+            p, self.calculator, None, fit_info, depths, np.full_like(depths, 1e-6), None, None)
+        self.assertTrue(np.isfinite(lnlike(params)))
+        self.assertLess(lnlike(np.r_[params[:2], params[:1:-1]]), lnlike(params))
+
     def test_identical_and_endpoint_sectors(self):
         sector = TerminatorSector(isothermal(1100), 1e4, 3, 4)
         _, expected, _ = self.calculator.compute_depths(
