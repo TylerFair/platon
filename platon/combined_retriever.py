@@ -127,10 +127,12 @@ class CombinedRetriever:
                     for name in fit_info.fit_param_names]
             params = fit_info._interpret_param_array(best)
             sectors = terminator.sectors_from_params(params)
+            P_quench = 10**params["log_P_quench"]
             for sector in sectors:
                 calculator._validate_params(
                     sector.profile.temperatures, params["logZ"],
-                    params["CO_ratio"], sector.cloudtop_pressure)
+                    params["CO_ratio"], sector.cloudtop_pressure,
+                    sector.profile.pressures, P_quench)
             for name in fit_info.fit_param_names:
                 param = fit_info.all_params[name]
                 if not isinstance(param, _UniformParam):
@@ -148,7 +150,8 @@ class CombinedRetriever:
                             name == f"{label}.log_cloudtop_P" else \
                             sector.cloudtop_pressure
                         calculator._validate_params(
-                            sector.profile.temperatures, logZ, ratio, cloudtop)
+                            sector.profile.temperatures, logZ, ratio, cloudtop,
+                            sector.profile.pressures, P_quench)
 
     @staticmethod
     def _offset_names(fit_info):

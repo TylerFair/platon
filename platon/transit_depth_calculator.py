@@ -7,6 +7,14 @@ from ._atmosphere_solver import AtmosphereSolver
 from .TP_profile import Profile
 from .terminator import TwoSectorTerminator
 
+# NOTE -- DELIBERATE CHANGE FROM PLATON'S DEFAULT (2026-10-25): transit depths
+# no longer reject a T/P profile just because it leaves the opacity grid's
+# temperature range (100-4000 K) somewhere in the column.  Out-of-grid
+# temperatures deeper than DEEP_CLAMP_PRESSURE and below the quench point are
+# clamped to the grid; anywhere shallower, or at the quench point, the profile
+# is still rejected.  See TransitDepthCalculator._clamp_unprobed.
+DEEP_CLAMP_PRESSURE = 1e6  # Pa (10 bar)
+
 
 class TransitDepthCalculator:
     def __init__(self, include_condensation=True, ref_pressure=1e5,
@@ -52,8 +60,39 @@ class TransitDepthCalculator:
         """
         self.atm.change_wavelength_bins(bins)
 
-    def _validate_params(self, T, logZ, CO_ratio, cloudtop_pressure):
+    def _validate_params(self, T, logZ, CO_ratio, cloudtop_pressure,
+                         pressures=None, P_quench=1e-99):
+        if pressures is not None:
+            T = self._clamp_unprobed(T, pressures, P_quench)
         self.atm._validate_params(T, logZ, CO_ratio, cloudtop_pressure)
+
+    def _clamp_unprobed(self, T_profile, P_profile, P_quench):
+        """NOTE: a deliberate change from PLATON's full-column rejection.
+
+        Clamps out-of-grid temperatures to the opacity grid's range in layers
+        the transmission spectrum cannot see: deeper than DEEP_CLAMP_PRESSURE
+        (10 bar) and deeper than the layers that set the quenched abundances.
+        Rejecting a profile for leaving the grid there would be a hidden
+        prior on the deep atmosphere, not a constraint from the data.  For
+        WASP-94 Ab's Guillot limbs it amounts to requiring T(1000 bar) <
+        4000 K: it rejected 86% of the posterior, although moving the clamp
+        from 4000 to 3500 K changes ln L by at most 0.24 nat when the quench
+        point is unaffected.  Out-of-grid temperatures shallower than that,
+        or at the quench point, are left in place, so that _validate_params
+        still rejects them, as it does non-positive temperatures anywhere.
+        Eclipse depths, which can see deeper, still reject over the full
+        column."""
+        T_profile = np.array(T_profile, dtype=np.float64)
+        P_profile = np.asarray(P_profile, dtype=np.float64)
+        if not np.all(np.isfinite(T_profile)) or np.any(T_profile <= 0):
+            raise AtmosphereError("Invalid temperatures in T/P profile")
+        deep = P_profile > max(DEEP_CLAMP_PRESSURE, P_quench)
+        # Quenched abundances interpolate between the layers bracketing
+        # P_quench, so the first layer below it is not clamped either
+        deep[np.searchsorted(P_profile, P_quench, side="right"):][:1] = False
+        T_profile[deep] = np.clip(T_profile[deep], self.atm.min_temperature,
+                                  self.atm.max_temperature)
+        return T_profile
 
     def compute_depths(self, t_p_profile, star_radius, planet_mass,
                        planet_radius, logZ=0, CO_ratio=0.53, CH4_mult=1,
@@ -287,8 +326,9 @@ class TransitDepthCalculator:
                             "platon.TP_profile or a TwoSectorTerminator")
         if cloud_fraction < 0 or cloud_fraction > 1:
             raise ValueError("cloud_fraction must be between 0 and 1")
-        T_profile = np.asarray(t_p_profile.temperatures, dtype=np.float64)
         P_profile = np.asarray(t_p_profile.pressures, dtype=np.float64)
+        T_profile = self._clamp_unprobed(
+            t_p_profile.temperatures, P_profile, P_quench)
 
         prep_kwargs = dict(
             star_radius=star_radius, planet_mass=planet_mass,

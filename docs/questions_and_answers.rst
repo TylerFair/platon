@@ -18,7 +18,23 @@ in that order.
   ratio from 0.001 to 2, temperature from 200 to 3000 K, and pressure
   from 10^-4 to 10^8 Pa.  If you wander outside these limits, PLATON
   will throw a ValueError.
-  
+
+  **Note -- a deliberate change from PLATON's default:** a T/P profile that
+  leaves the opacity grid's temperature range (100-4000 K) is rejected by
+  transit depth calculations only where the spectrum can see it.  Layers
+  deeper than 10 bar (``transit_depth_calculator.DEEP_CLAMP_PRESSURE``) and
+  below the quench point are clamped to the grid instead.  Rejecting
+  profiles that only leave the grid there is a hidden prior on the deep
+  atmosphere: for WASP-94 Ab's Guillot limbs it amounts to requiring
+  T(1000 bar) < 4000 K, which removed 86% of the posterior and moved
+  log(metallicity) from 1.6 to 1.0 through the allowed quench temperatures,
+  while moving the clamp from 4000 to 3500 K changes ln L by at most 0.24
+  nat when the quench point is unaffected.  Out-of-grid temperatures above
+  10 bar or at the quench point are still rejected, as are non-positive
+  temperatures anywhere (e.g. a parametric profile dipping below zero,
+  which clamping would turn into a featureless 100 K limb).  Eclipse
+  depths, which can see deeper, still reject over the full column.
+
 * **How do I specify custom abundances and T/P profiles?**
   
   One can set vertically constant abundances for some species
