@@ -78,6 +78,17 @@ class TestTransitDepthCalculator(unittest.TestCase):
                 isothermal_profile(T), Rs, Mp, Rp, logZ=0.2, CO_ratio=1.1,
                 T_star=6100)
 
+        # A cold top layer passes the median-T height estimate, but the
+        # hot layers below still make the radii diverge
+        profile = isothermal_profile(3500)
+        temperatures = np.array(profile.temperatures)
+        temperatures[0] = 800
+        with self.assertRaises(AtmosphereError):
+            depth_calculator.compute_depths(
+                Profile.from_arrays(profile.pressures, temperatures),
+                0.75 * R_sun, 0.2 * M_jup, R_jup, logZ=1.5, CO_ratio=0.5,
+                T_star=4700)
+
     def test_bin_wavelengths(self):
         Rp = 7.14e7
         Mp = 7.49e26

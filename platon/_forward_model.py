@@ -294,13 +294,14 @@ def _hydrostatic(sc, P_profile, T_profile, mu_profile):
     # dr computed from the exact segment values to avoid FP32 cancellation
     dr = seg / (inv_r[1:] * inv_r[:-1])
 
-    # Unbound-atmosphere diagnostics (same criteria as the FP64 version)
+    # Unbound-atmosphere diagnostics (same criteria as the FP64 version), plus
+    # radii that diverge (1/r <= 0) where the median-T estimate misses it
     R_hill = Rs * (sc[SC_T_STAR_HYDRO] / T_profile[0]) ** 2 * \
         (Mp / (3 * M_sun)) ** (1.0 / 3)
     max_r_estimate = 1.0 / (1.0 / Rp + KB_OVER_G_AMU * jnp.median(T_profile) *
                             jnp.log(P_profile[0] / sc[SC_REF_PRESSURE]) /
                             (Mp * jnp.mean(mu_profile)))
-    unbound = (max_r_estimate < 0) | (max_r_estimate > R_hill)
+    unbound = (max_r_estimate < 0) | (max_r_estimate > R_hill) | (jnp.min(inv_r) <= 0)
     return radii, dr, unbound
 
 
