@@ -3,6 +3,8 @@ import os
 import numpy as np
 import matplotlib.pyplot as plt
 import scipy.interpolate
+import scipy.special
+import scipy.stats
 import emcee
 from dynesty import NestedSampler
 from dynesty import plotting as dyplot
@@ -16,13 +18,17 @@ from .eclipse_depth_calculator import EclipseDepthCalculator
 from .fit_info import FitInfo
 
 from .constants import METRES_TO_UM, M_jup, R_jup, R_earth, M_earth, R_sun
-from ._params import _UniformParam
+from ._params import _UniformParam, _GaussianParam
 from .errors import AtmosphereError
 from ._output_writer import write_param_estimates_file
 from .TP_profile import Profile
 from .terminator import TwoSectorTerminator, label_by_temperature, limb_time_shifts
 from .retrieval_result import RetrievalResult
 from .custom_dynesty_result import CustomDynestyResult
+
+# Nodes spanning the prior range of each integrated-out error inflation
+N_INFLATION_NODES = 2049
+
 
 class CombinedRetriever:
     def pretty_print(self, fit_info):
@@ -165,6 +171,249 @@ class CombinedRetriever:
                 depths[start:end] += params_dict[name]
 
     @staticmethod
+    def _error_factors(params_dict, kind, n_points):
+        """Factor multiplying each error of the kind's data ("transit",
+        "eclipse" or "time_shift"): 10**log_error_inflation for depths, times
+        10**x for the range in params_dict[kind + "_error_inflations"] that
+        holds the point, if any."""
+        log_factors = np.zeros(n_points)
+        if kind != "time_shift":
+            log_factors += params_dict.get("log_error_inflation", 0)
+        for name, (start, end) in \
+                (params_dict.get(kind + "_error_inflations") or {}).items():
+            log_factors[start:end] += params_dict[name]
+        return 10**log_factors
+
+    @staticmethod
+    def _marginalize(fit_info):
+        """Returns a copy of fit_info that does not sample the fitted offsets
+        or the error inflations with uniform priors; _ln_like integrates them
+        out over their priors instead (see _nuisance_ln_like), so the evidence
+        and the posterior of every other parameter are unchanged.  Returns
+        fit_info itself if there is nothing to integrate out."""
+        offsets, per_range = set(), set()
+        for kind in ("transit", "eclipse", "time_shift"):
+            for names, key in ((offsets, kind + "_offsets"),
+                               (per_range, kind + "_error_inflations")):
+                param = fit_info.all_params.get(key)
+                if param is not None and param.best_guess is not None:
+                    names.update(param.best_guess)
+        inflations = per_range | {"log_error_inflation"}
+        marginal = [name for name in fit_info.fit_param_names
+                    if name in offsets or (name in inflations and isinstance(
+                        fit_info.all_params[name], _UniformParam))]
+        if not marginal:
+            return fit_info
+        if "log_error_inflation" in marginal and per_range & set(marginal):
+            raise ValueError("Fit either log_error_inflation or per-range "
+                             "error inflations, not both")
+        reduced = copy.deepcopy(fit_info)
+        reduced.fit_param_names = [name for name in fit_info.fit_param_names
+                                   if name not in marginal]
+        reduced.marginal_params = marginal
+        return reduced
+
+    @staticmethod
+    def _log_ndtr_diff(high, low):
+        """log(Phi(high) - Phi(low)) for high > low, accurate in both tails."""
+        flip = low > 0
+        high, low = np.where(flip, -low, high), np.where(flip, -high, low)
+        log_high = scipy.special.log_ndtr(high)
+        return log_high + np.log(-np.expm1(scipy.special.log_ndtr(low) - log_high))
+
+    @staticmethod
+    def _nuisance_ln_like(fit_info, params_dict, blocks):
+        """Gaussian log likelihood with fit_info.marginal_params integrated out
+        over their priors.  blocks maps each data kind to (model - data,
+        errors), computed with those offsets at 0 and inflations at 1.
+
+        The model is linear in each offset, so its integral is closed form.
+        An error inflation multiplies the errors of its data by b = 10**x, x
+        uniform, and is integrated over N_INFLATION_NODES values of x, taking
+        the log of the integrand as linear between them (_ln_cells).  Data
+        sharing an inflation (or having none) form a group; given b, each
+        group's likelihood depends only on sums over its data, and the groups
+        are independent.  Returns the log likelihood and, per group,
+        (inflation name or None, x nodes, log integrand at the nodes,
+        [(offset name, W, R)]) with W = sum 1/err^2 and R = sum (data -
+        model)/err^2 over the offset's data."""
+        marginal = fit_info.marginal_params
+        inflations, labels = [None], {}
+        for kind, (residuals, errors) in blocks.items():
+            labels[kind] = np.zeros(len(residuals), int)
+            ranges = dict(params_dict.get(kind + "_error_inflations") or {})
+            if kind != "time_shift":
+                ranges["log_error_inflation"] = (0, len(residuals))
+            for name, (start, end) in ranges.items():
+                if name in marginal:
+                    if name not in inflations:
+                        inflations.append(name)
+                    labels[kind][start:end] = inflations.index(name)
+
+        n_groups = len(inflations)
+        chi2, ln_errors, counts = np.zeros((3, n_groups))
+        offsets = {}
+        for kind, (residuals, errors) in blocks.items():
+            chi2 += np.bincount(labels[kind], (residuals / errors)**2, n_groups)
+            ln_errors += np.bincount(labels[kind], np.log(errors), n_groups)
+            counts += np.bincount(labels[kind], minlength=n_groups)
+            for name, (start, end) in \
+                    (params_dict.get(kind + "_offsets") or {}).items():
+                if name not in marginal:
+                    continue
+                W, R, group = offsets.get(name, (0, 0, set()))
+                group = group | set(labels[kind][start:end])
+                weights = errors[start:end]**-2
+                offsets[name] = (W + weights.sum(),
+                                 R - (weights * residuals[start:end]).sum(), group)
+
+        ln_like, groups = 0, []
+        for g, name in enumerate(inflations):
+            if name is None:
+                x = np.zeros(1)
+            else:
+                prior = fit_info.all_params[name]
+                x = np.linspace(prior.low_lim, prior.high_lim, N_INFLATION_NODES)
+            b = 10**x
+            terms = -0.5 * chi2[g] / b**2 - ln_errors[g] - counts[g] * np.log(b) \
+                - 0.5 * counts[g] * np.log(2 * np.pi)
+            group_offsets = []
+            for offset, (W, R, group) in offsets.items():
+                if W == 0:
+                    raise ValueError("Offset {} covers no data".format(offset))
+                if len(group) > 1:
+                    raise ValueError(
+                        "Offset {} spans data with different error inflations, "
+                        "so it cannot be integrated out".format(offset))
+                if g not in group:
+                    continue
+                prior = fit_info.all_params[offset]
+                mean, std = R / W, b / np.sqrt(W)
+                terms = terms + 0.5 * R * mean / b**2 + np.log(np.sqrt(2 * np.pi) * std)
+                if isinstance(prior, _GaussianParam):
+                    terms += scipy.stats.norm.logpdf(
+                        mean, prior.best_guess, np.hypot(std, prior.std))
+                else:
+                    terms += CombinedRetriever._log_ndtr_diff(
+                        (prior.high_lim - mean) / std, (prior.low_lim - mean) / std) \
+                        - np.log(prior.high_lim - prior.low_lim)
+                group_offsets.append((offset, W, R))
+            if name is None:
+                ln_like += terms[0]
+            else:  # the cells' widths times the uniform prior density
+                ln_like += scipy.special.logsumexp(CombinedRetriever._ln_cells(
+                    terms)) - np.log(N_INFLATION_NODES - 1)
+            groups.append((name, x, terms, group_offsets))
+        return ln_like, groups
+
+    @staticmethod
+    def _ln_cells(ln_f):
+        """ln of the integral of f over each cell between equally spaced
+        nodes, in units of the spacing, with ln f linear in each cell.  This is
+        exact where f rises exponentially, e.g. toward a prior edge."""
+        d = np.diff(ln_f)
+        a = np.abs(d)
+        small = a < 1e-8
+        a = np.where(small, 1, a)
+        return ln_f[:-1] + np.where(
+            small, d / 2, np.maximum(d, 0) + np.log(-np.expm1(-a)) - np.log(a))
+
+    @staticmethod
+    def _draw_nuisance(fit_info, groups, size, mode=False):
+        """size draws of each integrated-out parameter from its posterior given
+        the other parameters, as a dict of arrays; with mode, its conditional
+        mode instead (the most probable inflation node, then the offsets'
+        mode given it).  groups is from _nuisance_ln_like."""
+        values = {}
+        for name, x, ln_f, offsets in groups:
+            if name is None:
+                inflation = np.zeros(size)
+            elif mode:
+                inflation = np.full(size, x[np.argmax(ln_f)])
+            else:
+                # a cell, then a point in it from the log-linear density
+                ln_cells = CombinedRetriever._ln_cells(ln_f)
+                p = np.exp(ln_cells - ln_cells.max())
+                cell = np.random.choice(len(p), size, p=p / p.sum())
+                slope, u = np.diff(ln_f)[cell], np.random.random(size)
+                with np.errstate(all="ignore"):
+                    t = np.where(np.abs(slope) < 1e-8, u, np.where(
+                        slope > 0, 1 + np.log(u + (1 - u) * np.exp(-slope)) / slope,
+                        np.log1p(u * np.expm1(slope)) / slope))
+                inflation = x[cell] + t * (x[1] - x[0])
+            if name is not None:  # inside the open prior interval
+                inflation = values[name] = np.clip(
+                    inflation, np.nextafter(x[0], x[-1]), np.nextafter(x[-1], x[0]))
+            b = 10**inflation
+            for offset, W, R in offsets:
+                prior = fit_info.all_params[offset]
+                mean, std = np.full(size, R / W), b / np.sqrt(W)
+                if isinstance(prior, _GaussianParam):
+                    var = 1 / (std**-2 + prior.std**-2)
+                    mean = var * (mean / std**2 + prior.best_guess / prior.std**2)
+                    values[offset] = mean if mode else \
+                        np.random.normal(mean, np.sqrt(var), size)
+                elif mode:  # inside the open prior interval
+                    values[offset] = np.clip(
+                        mean, np.nextafter(prior.low_lim, prior.high_lim),
+                        np.nextafter(prior.high_lim, prior.low_lim))
+                else:
+                    values[offset] = scipy.stats.truncnorm.rvs(
+                        (prior.low_lim - mean) / std, (prior.high_lim - mean) / std,
+                        loc=mean, scale=std, size=size)
+        return values
+
+    def _with_nuisance(self, rows, fit_info, full_fit_info, like_args, mode=False):
+        """Rows of fit_info's parameters as rows of full_fit_info's, each
+        integrated-out parameter drawn from its posterior given the rest of
+        its row (or, with mode, set to its conditional mode).  Each distinct
+        row costs one model evaluation.  like_args = (transit_calc,
+        eclipse_calc, transit_depths, transit_errors, eclipse_depths,
+        eclipse_errors, zero_opacities)."""
+        rows = np.array(rows, float, ndmin=2)
+        if fit_info is full_fit_info:
+            return rows
+        transit_calc, eclipse_calc, *data, zero_opacities = like_args
+        unique, inverse = np.unique(rows, axis=0, return_inverse=True)
+        inverse = inverse.ravel()
+        order = np.argsort(inverse, kind="stable")
+        result = np.empty((len(rows), len(full_fit_info.fit_param_names)))
+        for row, where in zip(unique, np.split(
+                order, np.cumsum(np.bincount(inverse))[:-1])):
+            ln_like = self._ln_like(row, transit_calc, eclipse_calc, fit_info,
+                                    *data, zero_opacities=zero_opacities)
+            if not np.isfinite(ln_like):
+                raise ValueError("Posterior sample {} has zero likelihood".format(row))
+            values = {name: np.full(len(where), value)
+                      for name, value in zip(fit_info.fit_param_names, row)}
+            values.update(self._draw_nuisance(
+                fit_info, self.last_nuisance, len(where), mode))
+            result[where] = np.array(
+                [values[name] for name in full_fit_info.fit_param_names]).T
+        return result
+
+    def _best_with_nuisance(self, best, fit_info, full_fit_info, like_args):
+        """The best-fit row of fit_info's parameters as a row of
+        full_fit_info's, with its integrated-out parameters at their
+        conditional mode, and that row's ln probability."""
+        best = self._with_nuisance(best, fit_info, full_fit_info, like_args,
+                                   mode=True)[0]
+        transit_calc, eclipse_calc, *data, zero_opacities = like_args
+        return best, full_fit_info._ln_prior(best) + self._ln_like(
+            best, transit_calc, eclipse_calc, full_fit_info, *data,
+            zero_opacities=zero_opacities)
+
+    def _pointwise_ln_like(self, params, fit_info, like_args):
+        """Per-point ln likelihoods at params, from the cache if there."""
+        pointwise = self.params_to_lnlike.get(tuple(params))
+        if pointwise is None:
+            transit_calc, eclipse_calc, *data, zero_opacities = like_args
+            pointwise = self._ln_like(
+                params, transit_calc, eclipse_calc, fit_info, *data,
+                zero_opacities=zero_opacities, lnlike_per_point=True)
+        return pointwise
+
+    @staticmethod
     def _visit_hets(params, n_points):
         """T_het, het_cov_frac, T_het2, het2_cov_frac, as arrays with one value per point
         if any visit in transit_visits has its own value."""
@@ -200,6 +449,10 @@ class CombinedRetriever:
             return -np.inf
 
         params_dict = fit_info._interpret_param_array(params)
+        marginal = getattr(fit_info, "marginal_params", ())
+        for name in marginal:
+            params_dict[name] = 0
+        blocks = {}
         
         Rp = params_dict["Rp"]
         T = params_dict["T"]
@@ -296,7 +549,9 @@ class CombinedRetriever:
 
                 self._apply_offsets(calculated_transit_depths, params_dict, "transit")
                 residuals = calculated_transit_depths - measured_transit_depths
-                scaled_errors = np.sqrt(measured_transit_errors**2 + error_excess**2)
+                scaled_errors = np.sqrt(measured_transit_errors**2 + error_excess**2) * \
+                    self._error_factors(params_dict, "transit", len(residuals))
+                blocks["transit"] = residuals, scaled_errors
                 ln_likelihood = np.append(ln_likelihood, -0.5 * (residuals**2 / scaled_errors**2 + np.log(2 * np.pi * scaled_errors**2)))
 
                 if params_dict.get("time_shifts") is not None:
@@ -308,7 +563,9 @@ class CombinedRetriever:
                         if coefficients is None else coefficients * (np.sqrt(trailing) - np.sqrt(leading))
                     self._apply_offsets(shifts, params_dict, "time_shift")
                     residuals = shifts - params_dict["time_shifts"]
-                    errors = params_dict["time_shift_errors"]
+                    errors = params_dict["time_shift_errors"] * \
+                        self._error_factors(params_dict, "time_shift", len(residuals))
+                    blocks["time_shift"] = residuals, errors
                     ln_likelihood = np.append(ln_likelihood, -0.5 * (residuals**2 / errors**2 + np.log(2 * np.pi * errors**2)))
                     if ret_best_fit:
                         transit_info_dict["time_shifts"] = shifts
@@ -334,11 +591,17 @@ class CombinedRetriever:
                     part_size = part_size, ri=ri, P_quench=P_quench, full_output=ret_best_fit, zero_opacities=zero_opacities)
                 self._apply_offsets(calculated_eclipse_depths, params_dict, "eclipse")
                 residuals = calculated_eclipse_depths - measured_eclipse_depths
-                scaled_errors = np.sqrt(measured_eclipse_errors**2 + error_excess**2)
+                scaled_errors = np.sqrt(measured_eclipse_errors**2 + error_excess**2) * \
+                    self._error_factors(params_dict, "eclipse", len(residuals))
+                blocks["eclipse"] = residuals, scaled_errors
                 ln_likelihood = np.append(ln_likelihood, -0.5 * (residuals**2 / scaled_errors**2 + np.log(2 * np.pi * scaled_errors**2)))
 
         except AtmosphereError as e:
             return -np.inf
+
+        if marginal:
+            ln_likelihood, self.last_nuisance = self._nuisance_ln_like(
+                fit_info, params_dict, blocks)
         
         self.last_params = params
         self.last_lnprob = fit_info._ln_prior(params) + ln_likelihood.sum()
@@ -355,6 +618,8 @@ class CombinedRetriever:
             return calculated_transit_depths, transit_info_dict, calculated_eclipse_depths, eclipse_info_dict
 
         if lnlike_per_point:
+            if marginal:
+                return np.atleast_1d(ln_likelihood)
             self.params_to_lnlike[tuple(params)] = ln_likelihood
             return ln_likelihood
 
@@ -438,7 +703,8 @@ class CombinedRetriever:
                   fit_info, nwalkers=50,
                   nsteps=1000, include_condensation=True,
                   rad_method="xsec",
-                  num_final_samples=100, zero_opacities=[]):
+                  num_final_samples=100, zero_opacities=[],
+                  marginalize_nuisance=True):
         '''Runs affine-invariant MCMC to retrieve atmospheric parameters.
 
         Parameters
@@ -474,13 +740,17 @@ class CombinedRetriever:
             "xsec" for opacity sampling (correlated-k is no longer supported)
         zero_opacities : list of strings
             List of molecules to zero opacities for
+        marginalize_nuisance : bool, optional
+            Integrate the fitted offsets and the error inflations with
+            uniform priors out of the likelihood instead of sampling them
+            (see the "Offsets and error inflations" section of the docs).
+            The returned samples include them, drawn from their posterior.
 
         Returns
         -------
         result : RetrievalResult object
         '''
         self.params_to_lnlike = {}
-        initial_positions = fit_info._generate_rand_param_arrays(nwalkers)
         transit_calc = None
         eclipse_calc = None
 
@@ -495,6 +765,13 @@ class CombinedRetriever:
                 include_condensation=include_condensation, method=rad_method)
             eclipse_calc.change_wavelength_bins(eclipse_bins)       
 
+        full_fit_info = fit_info
+        if marginalize_nuisance:
+            fit_info = self._marginalize(fit_info)
+        like_args = (transit_calc, eclipse_calc, transit_depths, transit_errors,
+                     eclipse_depths, eclipse_errors, zero_opacities)
+        initial_positions = fit_info._generate_rand_param_arrays(nwalkers)
+
         sampler = emcee.EnsembleSampler(
             nwalkers, fit_info._get_num_fit_params(), self._ln_prob,
             args=(transit_calc, eclipse_calc, fit_info, transit_depths, transit_errors,
@@ -507,17 +784,24 @@ class CombinedRetriever:
 
         best_params_arr = sampler.flatchain[np.argmax(
             sampler.flatlnprobability)]
+        best_ln_prob = np.max(sampler.flatlnprobability)
+        flatchain = self._with_nuisance(
+            sampler.flatchain, fit_info, full_fit_info, like_args)
+        if fit_info is not full_fit_info:
+            best_params_arr, best_ln_prob = self._best_with_nuisance(
+                best_params_arr, fit_info, full_fit_info, like_args)
+        fit_info = full_fit_info
         
         # Two-sector parameters are reported as cold/hot by temperature
         labels, samples = label_by_temperature(
-            fit_info, np.vstack([sampler.flatchain, best_params_arr]))
+            fit_info, np.vstack([flatchain, best_params_arr]))
         divisors, new_labels = self._get_divisors_labels(
             np.median(samples[:-1], axis=0), labels)
         
         write_param_estimates_file(
             samples[:-1] / divisors,
             samples[-1] / divisors,
-            np.max(sampler.flatlnprobability),
+            best_ln_prob,
             new_labels)
 
         best_fit_transit_depths, best_fit_transit_info, best_fit_eclipse_depths, best_fit_eclipse_info = self._ln_like(
@@ -537,7 +821,7 @@ class CombinedRetriever:
             best_fit_transit_depths, best_fit_transit_info,
             best_fit_eclipse_depths, best_fit_eclipse_info,
             fit_info, divisors, new_labels)
-        equal_samples = np.copy(sampler.flatchain)
+        equal_samples = np.copy(flatchain)
         np.random.shuffle(equal_samples)
         self._init_random_samples(retrieval_result)
         for params in equal_samples[:num_final_samples]:
@@ -550,7 +834,7 @@ class CombinedRetriever:
             _, transit_info, _, eclipse_info = ret
             self._record_random_sample(
                 retrieval_result, transit_info, eclipse_info,
-                self.params_to_lnlike[tuple(params)])
+                self._pointwise_ln_like(params, fit_info, like_args))
         retrieval_result.loo_total, retrieval_result.loos, retrieval_result.loo_ks = psisloo(np.array(retrieval_result.pointwise_lnlikes))
         return retrieval_result
 
@@ -585,7 +869,7 @@ class CombinedRetriever:
                       include_condensation=True, rad_method="xsec",
                       maxiter=None, maxcall=None, nlive=250,
                       num_final_samples=100, zero_opacities=[],
-                      **dynesty_kwargs):
+                      marginalize_nuisance=True, **dynesty_kwargs):
         '''Runs nested sampling to retrieve atmospheric parameters.
 
         Parameters
@@ -619,6 +903,11 @@ class CombinedRetriever:
             Number of live points to use for nested sampling
         zero_opacities : list of strings                                                                                                                                                                   
             List of molecules to zero opacities for
+        marginalize_nuisance : bool, optional
+            Integrate the fitted offsets and the error inflations with
+            uniform priors out of the likelihood instead of sampling them
+            (see the "Offsets and error inflations" section of the docs).
+            The returned samples include them, drawn from their posterior.
         **dynesty_kwargs : keyword arguments to pass to dynesty's NestedSampler
 
         Returns
@@ -638,6 +927,12 @@ class CombinedRetriever:
             eclipse_calc = EclipseDepthCalculator(
                 include_condensation=include_condensation, method=rad_method)
             eclipse_calc.change_wavelength_bins(eclipse_bins)
+
+        full_fit_info = fit_info
+        if marginalize_nuisance:
+            fit_info = self._marginalize(fit_info)
+        like_args = (transit_calc, eclipse_calc, transit_depths, transit_errors,
+                     eclipse_depths, eclipse_errors, zero_opacities)
 
         def transform_prior(cube):
             return fit_info._from_unit_interval_array(cube)
@@ -667,6 +962,13 @@ class CombinedRetriever:
         result.weights = normalized_weights                                
         equal_samples = dynesty.utils.resample_equal(result.samples, result.weights)
         np.random.shuffle(equal_samples)
+        best_ln_prob = np.max(result.logp)
+        equal_samples = self._with_nuisance(
+            equal_samples, fit_info, full_fit_info, like_args)
+        if fit_info is not full_fit_info:
+            best_params_arr, best_ln_prob = self._best_with_nuisance(
+                best_params_arr, fit_info, full_fit_info, like_args)
+        fit_info = full_fit_info
 
         labels, samples = label_by_temperature(
             fit_info, np.vstack([equal_samples, best_params_arr]))
@@ -676,7 +978,7 @@ class CombinedRetriever:
         write_param_estimates_file(
             samples[:-1] / divisors,
             samples[-1] / divisors,
-            np.max(result.logp),
+            best_ln_prob,
             new_labels)
         
         best_fit_transit_depths, best_fit_transit_info, best_fit_eclipse_depths, best_fit_eclipse_info = self._ln_like(
@@ -701,7 +1003,7 @@ class CombinedRetriever:
                 zero_opacities=zero_opacities, ret_best_fit=True)
             self._record_random_sample(
                 retrieval_result, transit_info, eclipse_info,
-                self.params_to_lnlike[tuple(params)])
+                self._pointwise_ln_like(params, fit_info, like_args))
 
         #Calculate LOO-CV scores
         retrieval_result.loo_total, retrieval_result.loos, retrieval_result.loo_ks = psisloo(np.array(retrieval_result.pointwise_lnlikes))
@@ -715,11 +1017,12 @@ class CombinedRetriever:
                       include_condensation=True, rad_method="xsec",
                       maxiter=None, maxcall=None, nlive=250,
                       num_final_samples=100, zero_opacities=[],
-                      multinest_kwargs={}):
+                      multinest_kwargs={}, marginalize_nuisance=True):
         """multinest_kwargs are forwarded to pymultinest.solve/run (e.g.
         sampling_efficiency, const_efficiency_mode, evidence_tolerance,
         multimodal, outputfiles_basename). maxiter sets MultiNest's max_iter
         (0 means unlimited). maxcall is unsupported and must be None.
+        marginalize_nuisance is as for run_dynesty.
         """
         if maxcall is not None:
             raise ValueError(
@@ -745,6 +1048,12 @@ class CombinedRetriever:
             eclipse_calc = EclipseDepthCalculator(
                 include_condensation=include_condensation, method=rad_method)
             eclipse_calc.change_wavelength_bins(eclipse_bins)
+
+        full_fit_info = fit_info
+        if marginalize_nuisance:
+            fit_info = self._marginalize(fit_info)
+        like_args = (transit_calc, eclipse_calc, transit_depths, transit_errors,
+                     eclipse_depths, eclipse_errors, zero_opacities)
 
         def transform_prior(cube):
             return fit_info._from_unit_interval_array(cube)
@@ -783,6 +1092,13 @@ class CombinedRetriever:
         
         equal_samples = a.get_equal_weighted_posterior()[:,:-1]
         np.random.shuffle(equal_samples)
+        best_ln_prob = np.max(result["logp"])
+        equal_samples = self._with_nuisance(
+            equal_samples, fit_info, full_fit_info, like_args)
+        if fit_info is not full_fit_info:
+            best_params_arr, best_ln_prob = self._best_with_nuisance(
+                best_params_arr, fit_info, full_fit_info, like_args)
+        fit_info = full_fit_info
         result["equal_samples"] = equal_samples
         
         labels, samples = label_by_temperature(
@@ -793,7 +1109,7 @@ class CombinedRetriever:
         write_param_estimates_file(
             samples[:-1] / divisors,
             samples[-1] / divisors,
-            np.max(result["logp"]),
+            best_ln_prob,
             new_labels)
 
         best_fit_transit_depths, best_fit_transit_info, best_fit_eclipse_depths, best_fit_eclipse_info = self._ln_like(
@@ -837,12 +1153,15 @@ class CombinedRetriever:
                      n_live=2000, n_eff=10000, n_networks=16,
                      discard_exploration=True, verbose=True,
                      num_final_samples=100, zero_opacities=(),
-                     **nautilus_kwargs):
+                     marginalize_nuisance=True, **nautilus_kwargs):
         """Run optional Nautilus nested sampling.
 
         Install support with ``pip install "platon[nautilus]"`` or
         ``pip install nautilus-sampler``. Extra keyword arguments are passed
-        directly to :class:`nautilus.Sampler`.
+        directly to :class:`nautilus.Sampler`.  marginalize_nuisance is as
+        for run_dynesty; when it applies, the returned equal-weight samples
+        are n_eff random rows of the resampled posterior, each with its
+        integrated-out parameters drawn from their posterior.
         """
         try:
             from nautilus import Sampler
@@ -865,6 +1184,12 @@ class CombinedRetriever:
             eclipse_calc = EclipseDepthCalculator(
                 include_condensation=include_condensation, method=rad_method)
             eclipse_calc.change_wavelength_bins(eclipse_bins)
+
+        full_fit_info = fit_info
+        if marginalize_nuisance:
+            fit_info = self._marginalize(fit_info)
+        like_args = (transit_calc, eclipse_calc, transit_depths, transit_errors,
+                     eclipse_depths, eclipse_errors, zero_opacities)
 
         def transform_prior(cube):
             return fit_info._from_unit_interval_array(cube)
@@ -897,13 +1222,22 @@ class CombinedRetriever:
 
         equal_samples = dynesty.utils.resample_equal(samples, weights)
         np.random.shuffle(equal_samples)
+        best_ln_prob = np.max(logp)
+        if fit_info is not full_fit_info:
+            equal_samples = equal_samples[:int(n_eff)]
+        equal_samples = self._with_nuisance(
+            equal_samples, fit_info, full_fit_info, like_args)
+        if fit_info is not full_fit_info:
+            best_params_arr, best_ln_prob = self._best_with_nuisance(
+                best_params_arr, fit_info, full_fit_info, like_args)
+        fit_info = full_fit_info
         labels, samples = label_by_temperature(
             fit_info, np.vstack([equal_samples, best_params_arr]))
         divisors, new_labels = self._get_divisors_labels(
             np.median(samples[:-1], axis=0), labels)
         write_param_estimates_file(
             samples[:-1] / divisors, samples[-1] / divisors,
-            np.max(logp), new_labels)
+            best_ln_prob, new_labels)
 
         best = self._ln_like(
             best_params_arr, transit_calc, eclipse_calc, fit_info,
@@ -969,6 +1303,9 @@ class CombinedRetriever:
                              transit_visits=None,
                              time_shifts=None, time_shift_errors=None, period=None, b=None,
                              time_shift_offsets=None, time_shift_coefficients=None,
+                             log_error_inflation=0, transit_error_inflations=None,
+                             eclipse_error_inflations=None,
+                             time_shift_error_inflations=None,
                              **profile_kwargs):
         '''Get a :class:`.FitInfo` object filled with best guess values.  A few
         parameters are required, but others can be set to default values if you
@@ -994,6 +1331,16 @@ class CombinedRetriever:
             sqrt(error**2 + error_excess**2).  Fit for it (e.g. with a
             uniform prior from 0 to 1e-4) to account for underestimated
             errors or scatter the model cannot explain.
+        log_error_inflation : float
+            log10 of a factor multiplying every transit and eclipse depth
+            error (after error_excess).  Fit it with a uniform prior, e.g.
+            fit_info.add_uniform_fit_param("log_error_inflation", -0.3, 0.7).
+        transit_error_inflations, eclipse_error_inflations,
+        time_shift_error_inflations : dict, optional
+            Per-instrument error inflations, given like transit_offsets: each
+            name is the log10 of a factor multiplying the errors of its range
+            of data, defaults to 0 and is fit like log_error_inflation.  Fit
+            either these or log_error_inflation, not both.
         transit_offsets : dict, optional
             Per-instrument offsets for transit data, as a dict mapping each
             offset parameter name to the (start, end) indices of the data it
@@ -1021,6 +1368,10 @@ class CombinedRetriever:
             Like transit_offsets, in seconds, added to model shifts.  Each is
             the true mid-transit time minus the reference time for its range;
             fit it unless the reference is the true mid-transit time.
+
+            The retrievers integrate every fitted offset, and every error
+            inflation with a uniform prior, out of the likelihood rather than
+            sampling it (see their marginalize_nuisance argument).
         time_shift_coefficients : array, optional
             Calibrated shift per unit trailing-minus-leading radius, in s per
             stellar radius, one per transit point (e.g. from injecting a small
@@ -1089,32 +1440,36 @@ class CombinedRetriever:
                         "{}={}".format(name, current, name, value))
                 all_variables[name] = value
 
-        offset_names = set()
-        for kind, offsets in (("transit", transit_offsets),
-                              ("eclipse", eclipse_offsets),
-                              ("time_shift", time_shift_offsets)):
-            if offsets is None:
+        range_names = {}
+        for kind, what, ranges in (
+                ("transit", "offsets", transit_offsets),
+                ("eclipse", "offsets", eclipse_offsets),
+                ("time_shift", "offsets", time_shift_offsets),
+                ("transit", "error inflations", transit_error_inflations),
+                ("eclipse", "error inflations", eclipse_error_inflations),
+                ("time_shift", "error inflations", time_shift_error_inflations)):
+            if ranges is None:
                 continue
-            for name, index_range in offsets.items():
-                if name in all_variables and name not in offset_names:
+            for name, index_range in ranges.items():
+                if name in all_variables and range_names.get(name) != what:
                     raise ValueError(
-                        "Offset name {} conflicts with an existing "
-                        "parameter".format(name))
+                        "Name {} in {} {} conflicts with an existing "
+                        "parameter".format(name, kind, what))
                 if len(index_range) != 2 or \
                    not 0 <= index_range[0] < index_range[1]:
                     raise ValueError(
-                        "Range for offset {} must be (start, end) with "
+                        "Range for {} must be (start, end) with "
                         "0 <= start < end".format(name))
                 all_variables[name] = 0
-                offset_names.add(name)
+                range_names[name] = what
 
-            sorted_ranges = sorted(offsets.items(), key=lambda kv: kv[1][0])
+            sorted_ranges = sorted(ranges.items(), key=lambda kv: kv[1][0])
             for (name1, range1), (name2, range2) in zip(
                     sorted_ranges, sorted_ranges[1:]):
                 if range1[1] > range2[0]:
                     raise ValueError(
-                        "{} offsets {} {} and {} {} overlap".format(
-                            kind, name1, tuple(range1), name2, tuple(range2)))
+                        "{} {} {} {} and {} {} overlap".format(
+                            kind, what, name1, tuple(range1), name2, tuple(range2)))
         
         for visit in transit_visits or {}:
             for name in ("T_het", "het_cov_frac", "T_het2", "het2_cov_frac"):

@@ -107,3 +107,43 @@ posterior widths.  In a PLATON benchmark, `Savel et al. (2026)
 <https://arxiv.org/abs/2607.18409>`_ found that MultiNest underestimated
 posterior widths by about 10% and that its standard evidence was less accurate
 and precise than Nautilus under the tested settings.
+
+Offsets and error inflations
+============================
+
+Instrument offsets and error inflations are nuisance parameters: every
+sampler would otherwise spend dimensions on them.  Each offset shifts its
+range of data by a constant, so with Gaussian errors its integral over the
+prior is closed form.  Each error inflation multiplies the errors of its data
+by ``10**x``; with ``x`` uniform, its integral is one-dimensional, and PLATON
+evaluates it from a few sums over the data on a fine grid of ``x``, which is
+accurate to well below 0.01 in ln(likelihood).  So all four retrievers
+integrate every fitted offset, and every error inflation with a uniform
+prior, out of the likelihood by default.  The evidence and the posterior of
+every other parameter are unchanged; the sampler just has fewer dimensions.
+Set ``marginalize_nuisance=False`` to sample them instead.
+
+Error inflations are set up like offsets::
+
+  fit_info = retriever.get_default_fit_info(
+      ...,
+      transit_offsets={"offset_nrs1": (n_soss, n_soss + n_nrs1)},
+      transit_error_inflations={"log_infl_soss": (0, n_soss),
+                                "log_infl_nrs1": (n_soss, n_soss + n_nrs1)})
+  fit_info.add_uniform_fit_param("offset_nrs1", -1e-3, 1e-3)
+  fit_info.add_uniform_fit_param("log_infl_soss", -0.3, 0.7)
+  fit_info.add_uniform_fit_param("log_infl_nrs1", -0.3, 0.7)
+
+``log_error_inflation`` instead inflates every transit and eclipse error by
+one factor; fit either it or per-instrument inflations, not both.
+``time_shift_error_inflations`` does the same for time shifts.  An offset
+whose data have more than one error inflation cannot be integrated out, and
+raises an error.
+
+The returned samples still include the integrated-out parameters: after
+sampling, each one is drawn from its exact posterior given the other
+parameters of its sample, so corner plots, posterior spectra and the
+leave-one-out scores are those of the full model.  The best fit sets them to
+their most probable values given its other parameters.  For Nautilus, the
+equal-weight samples are then ``n_eff`` rows of the resampled posterior, since
+each row needs one more model evaluation.
