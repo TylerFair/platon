@@ -1,3 +1,4 @@
+import json
 import os
 
 import numpy as np
@@ -1313,7 +1314,180 @@ class CombinedRetriever:
             retrieval_result.loo_ks = psisloo(
                 np.array(retrieval_result.pointwise_lnlikes))
         return retrieval_result
-        
+
+    def run_inessai(self, transit_bins, transit_depths, transit_errors,
+                    eclipse_bins, eclipse_depths, eclipse_errors,
+                    fit_info, include_condensation=True, rad_method="xsec",
+                    output="inessai_output", n_live=5000, target_ess=5000,
+                    min_final_draws=1000000, max_final_draws=3000000,
+                    seed=None, max_seconds=None, verbose=True,
+                    num_final_samples=100, zero_opacities=(),
+                    marginalize_nuisance=True, **nessai_kwargs):
+        """Run importance nested sampling with normalizing flows (i-nessai).
+
+        Install support with ``pip install "platon[inessai]"`` (nessai
+        0.15.2 and PyTorch).  The run checkpoints in ``output``; on SIGTERM
+        or SIGUSR1, or after ``max_seconds``, it stops at the next
+        checkpoint and raises ``platon._inessai.Checkpointed`` (a SystemExit
+        with status 75).  Calling it again with the same arguments resumes
+        it.  ``seed=None`` draws a seed, which the output directory records.
+
+        After the nested sampling converges, its mixture of flows is frozen
+        and an independent importance sample of min_final_draws to
+        max_final_draws points (enough for an effective sample size of
+        target_ess, judged from 8,192 planning draws) gives the evidence and
+        posterior.  The result has ``logz``, ``logz_err``, the effective
+        sample size ``ess`` (also ``n_eff``), ``psis_ess``, the Pareto
+        ``pareto_k`` diagnostic (above 0.7, the weights are too heavy-tailed
+        for the evidence error to be trusted), the weighted final draws
+        (``draws``, ``weights``, ``logw``, ``logl``, ``logp``) and ``n_calls``.
+        ``samples`` holds ``ess`` (at most ``target_ess``) equal-weight rows
+        of the full model, with integrated-out parameters drawn as for
+        run_nautilus, followed by the best fit.  Extra keyword arguments
+        override nessai's sampler options.
+        """
+        try:
+            from . import _inessai
+        except ImportError as error:
+            raise ImportError(
+                'run_inessai requires the optional "nessai" (0.15.2) and '
+                '"torch" packages. Install them with pip install '
+                '"platon[inessai]". ({})'.format(error)) from error
+
+        self.params_to_lnlike = {}
+        transit_calc = None
+        eclipse_calc = None
+        if transit_bins is not None:
+            transit_calc = TransitDepthCalculator(
+                include_condensation=include_condensation, method=rad_method,
+                **fit_info._stellar_grid_options())
+            transit_calc.change_wavelength_bins(transit_bins)
+            self._validate_params(fit_info, transit_calc)
+        if eclipse_bins is not None:
+            eclipse_calc = EclipseDepthCalculator(
+                include_condensation=include_condensation, method=rad_method)
+            eclipse_calc.change_wavelength_bins(eclipse_bins)
+
+        full_fit_info = fit_info
+        if marginalize_nuisance:
+            fit_info = self._marginalize(fit_info)
+        like_args = (transit_calc, eclipse_calc, transit_depths, transit_errors,
+                     eclipse_depths, eclipse_errors, zero_opacities)
+        transform = _inessai.cube_transform(fit_info)
+        batched = self._batched_ln_like(
+            transit_calc, eclipse_calc, fit_info, transit_depths,
+            transit_errors, eclipse_depths, eclipse_errors, zero_opacities)
+        if batched is None:
+            def batched(rows):
+                return np.array([self._ln_like(
+                    row, transit_calc, eclipse_calc, fit_info,
+                    transit_depths, transit_errors, eclipse_depths,
+                    eclipse_errors, zero_opacities=zero_opacities)
+                    for row in rows])
+
+        def cube_ln_like(cube):
+            result = np.full(len(cube), -np.inf)
+            valid = np.all(np.isfinite(cube) & (cube > 0) & (cube < 1), axis=1)
+            if np.any(valid):
+                values = np.asarray(batched(transform(cube[valid])), dtype=float)
+                result[valid] = np.where(np.isfinite(values), values, -np.inf)
+            return result
+
+        # A drawn seed is recorded so that a resumed run reuses it
+        seed_path = os.path.join(output, "seed.json")
+        if seed is None and os.path.exists(seed_path):
+            with open(seed_path) as f:
+                seed = json.load(f)["seed"]
+        if seed is None:
+            seed = int(np.random.SeedSequence().entropy % 2**31)
+        if not os.path.exists(seed_path):
+            os.makedirs(output, exist_ok=True)
+            with open(seed_path, "w") as f:
+                json.dump({"seed": int(seed)}, f)
+        run = _inessai.sample(
+            cube_ln_like, fit_info._get_num_fit_params(), output, n_live,
+            int(seed), target_ess, min_final_draws, max_final_draws,
+            max_seconds=max_seconds, verbose=verbose, nessai_kwargs=nessai_kwargs)
+
+        stats = _inessai.importance_stats(run["logw"], int(run["n_draws"]))
+        finite = np.isfinite(run["logw"])
+        draws = transform(run["u"][finite])
+        log_weights = run["logw"][finite]
+        logl = run["logl"][finite]
+        weights = np.exp(log_weights - np.max(log_weights))
+        weights /= np.sum(weights)
+        logp = logl + _inessai.ln_prior(fit_info, draws)
+        best_params_arr = draws[np.argmax(logp)]
+        best_ln_prob = np.max(logp)
+
+        # ess (at most target_ess) equal-weight rows: each needs a model
+        # evaluation when parameters were integrated out
+        n_rows = stats["ess"] if not target_ess else min(stats["ess"], target_ess)
+        equal_samples = dynesty.utils.resample_equal(draws, weights)
+        np.random.shuffle(equal_samples)
+        equal_samples = equal_samples[:max(1, int(n_rows))]
+        equal_samples = self._with_nuisance(
+            equal_samples, fit_info, full_fit_info, like_args)
+        if fit_info is not full_fit_info:
+            best_params_arr, best_ln_prob = self._best_with_nuisance(
+                best_params_arr, fit_info, full_fit_info, like_args)
+        fit_info = full_fit_info
+        labels, samples = label_by_temperature(
+            fit_info, np.vstack([equal_samples, best_params_arr]))
+        divisors, new_labels = self._get_divisors_labels(
+            np.median(samples[:-1], axis=0), labels)
+        write_param_estimates_file(
+            samples[:-1] / divisors, samples[-1] / divisors,
+            best_ln_prob, new_labels)
+
+        best = self._ln_like(
+            best_params_arr, transit_calc, eclipse_calc, fit_info,
+            transit_depths, transit_errors, eclipse_depths, eclipse_errors,
+            zero_opacities=zero_opacities, ret_best_fit=True)
+        result = {
+            "samples": samples,
+            "draws": draws,
+            "weights": weights,
+            "logw": log_weights,
+            "logl": logl,
+            "logp": logp,
+            "logz": np.atleast_1d(stats["logz"]),
+            "logz_err": stats["logz_err"],
+            "ess": stats["ess"],
+            "n_eff": stats["ess"],
+            "psis_ess": stats["psis_ess"],
+            "pareto_k": stats["pareto_k"],
+            "n_draws": stats["n_draws"],
+            "n_calls": int(run["n_calls"]),
+            "training_logz": float(run["training_logz"]),
+            "success": True,
+        }
+        retrieval_result = RetrievalResult(
+            result, "inessai", best_params_arr,
+            transit_bins, transit_depths, transit_errors,
+            eclipse_bins, eclipse_depths, eclipse_errors,
+            best[0], best[1], best[2], best[3],
+            fit_info, divisors, new_labels)
+
+        self._init_random_samples(retrieval_result)
+        for params in equal_samples[:num_final_samples]:
+            pointwise = self._ln_like(
+                params, transit_calc, eclipse_calc, fit_info,
+                transit_depths, transit_errors,
+                eclipse_depths, eclipse_errors,
+                zero_opacities=zero_opacities, lnlike_per_point=True)
+            _, transit_info, _, eclipse_info = self._ln_like(
+                params, transit_calc, eclipse_calc, fit_info,
+                transit_depths, transit_errors,
+                eclipse_depths, eclipse_errors,
+                zero_opacities=zero_opacities, ret_best_fit=True)
+            self._record_random_sample(
+                retrieval_result, transit_info, eclipse_info, pointwise)
+
+        retrieval_result.loo_total, retrieval_result.loos, \
+            retrieval_result.loo_ks = psisloo(
+                np.array(retrieval_result.pointwise_lnlikes))
+        return retrieval_result
 
     @staticmethod
     def get_default_fit_info(Rs, Mp, Rp, T=None, logZ=0, CO_ratio=0.53, log_CH4_mult=0,

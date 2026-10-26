@@ -1,9 +1,9 @@
-PyMultiNest and Nautilus
-************************
+PyMultiNest, Nautilus and i-nessai
+**********************************
 
 PLATON supports several samplers through the same
-:class:`.CombinedRetriever` interface.  PyMultiNest and Nautilus are both
-optional: importing PLATON does not require either package.
+:class:`.CombinedRetriever` interface.  PyMultiNest, Nautilus and i-nessai
+are all optional: importing PLATON does not require any of them.
 
 Installing a sampler
 ====================
@@ -140,3 +140,48 @@ leave-one-out scores are those of the full model.  The best fit sets them to
 their most probable values given its other parameters.  For Nautilus, the
 equal-weight samples are then ``n_eff`` rows of the resampled posterior, since
 each row needs one more model evaluation.
+
+Importance nested sampling with flows (i-nessai)
+================================================
+
+``run_inessai`` runs nessai's importance nested sampler, which fits a new
+normalizing flow to the likelihood-constrained prior at every level, and
+then draws an independent importance sample from the frozen mixture of all
+its flows.  For degenerate two-limb retrievals it needs far fewer likelihood
+calls than Nautilus.  For WASP-94Ab (18 sampled parameters), it agreed with a
+5,000-live-point Nautilus run to 0.18 in ln(evidence) and to 0.2 posterior
+standard deviations in the physical parameters, with 11 times fewer calls.
+Install it with::
+
+  pip install ".[inessai]"
+
+which pins nessai 0.15.2 (PLATON speeds up its internals for that version)
+and installs PyTorch.  The call takes the same data as the others::
+
+  result = retriever.run_inessai(*data, output="inessai_output")
+
+The defaults are 5,000 live points and RealNVP flows (6 blocks of width 64,
+LU linear layers, a fresh flow every 8 levels, up to 300 epochs) whose base
+distribution has a 10% independent Student-t component.  The final
+importance sample has 1 to 3 million draws, sized from 8,192 planning draws
+for an effective sample size of ``target_ess=5000``.  Two-sector Guillot
+transit retrievals evaluate likelihoods in batches on the GPU, and on a GPU
+the flow densities are also evaluated there; neither changes the result.
+Extra keyword arguments override nessai's options.
+
+The run checkpoints in ``output``.  On SIGTERM or SIGUSR1, or after
+``max_seconds``, it stops at its next checkpoint and raises
+``platon._inessai.Checkpointed``, which exits the program with status 75
+unless caught; calling ``run_inessai`` again with the same arguments resumes
+it, so a batch job can simply be resubmitted.  A run that has finished is
+read back from ``output``.
+
+The result holds the evidence ``logz`` and its error ``logz_err``, the
+effective sample size ``ess``, the weighted final draws (``draws``,
+``weights``, ``logw``, ``logl``, ``logp``), ``n_calls``, and, in
+``samples``, ``ess`` equal-weight rows (at most ``target_ess``) followed by
+the best fit.  Check ``pareto_k``, the Pareto shape of the importance
+weights' tail: above 0.7 a few draws carry much of the weight, so the
+evidence error is unreliable and the posterior's rare regions may be
+under-sampled, even when ``logz`` and the posterior bulk are accurate.
+``psis_ess`` is the effective sample size after Pareto smoothing.

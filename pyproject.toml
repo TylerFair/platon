@@ -36,6 +36,7 @@ dependencies = [
 
 [project.optional-dependencies]
 nautilus = ["nautilus-sampler"]
+inessai = ["nessai==0.15.2", "torch"]
 
 [project.urls]
 Homepage = "https://github.com/ideasrule/platon"
