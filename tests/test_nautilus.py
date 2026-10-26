@@ -42,8 +42,12 @@ class _Sampler:
     def __init__(self, prior, likelihood, **kwargs):
         type(self).init_kwargs = kwargs
         cubes = np.array([[0.1, 0.2], [0.5, 0.5], [0.9, 0.8]])
-        self.samples = np.array([prior(cube) for cube in cubes])
-        self.logl = np.array([likelihood(point) for point in self.samples])
+        if kwargs.get("vectorized", False):
+            self.samples = prior(cubes)
+            self.logl = likelihood(self.samples)
+        else:
+            self.samples = np.array([prior(cube) for cube in cubes])
+            self.logl = np.array([likelihood(point) for point in self.samples])
         self.log_z = -12.5
         self.n_eff = 10000
 
@@ -56,6 +60,45 @@ class _Sampler:
 
 
 class TestNautilus(unittest.TestCase):
+    def _run_with_batches(self, batched):
+        retriever = CombinedRetriever()
+
+        def scalar_like(params, *args, ret_best_fit=False,
+                        lnlike_per_point=False, **kwargs):
+            if ret_best_fit:
+                return None, None, None, None
+            return -params**2 if lnlike_per_point else -np.sum(params**2)
+
+        module = types.SimpleNamespace(Sampler=_Sampler)
+        with mock.patch.dict(sys.modules, {"nautilus": module}), \
+             mock.patch.object(retriever, "_ln_like", side_effect=scalar_like), \
+             mock.patch.object(retriever, "_batched_ln_like", return_value=batched), \
+             mock.patch("platon.combined_retriever.write_param_estimates_file"), \
+             mock.patch("platon.combined_retriever.psisloo",
+                        return_value=(0, np.zeros(2), np.zeros(2))):
+            return retriever.run_nautilus(
+                None, None, None, None, None, None, _FitInfo(),
+                num_final_samples=0, verbose=False)
+
+    def test_batches_where_supported(self):
+        batches = []
+
+        def batch_like(rows):
+            batches.append(rows.copy())
+            return -np.sum(rows**2, axis=1)
+
+        result = self._run_with_batches(batch_like)
+        np.testing.assert_array_equal(batches[0],
+                                      [[880, 0.2], [1200, 0.5], [1520, 0.8]])
+        self.assertEqual(len(batches), 1)
+        self.assertTrue(_Sampler.init_kwargs["vectorized"])
+        self.assertTrue(result.success)
+
+    def test_scalar_likelihood_otherwise(self):
+        result = self._run_with_batches(None)
+        self.assertNotIn("vectorized", _Sampler.init_kwargs)
+        self.assertTrue(result.success)
+
     def test_lazy_import_error(self):
         with mock.patch.dict(sys.modules, {"nautilus": None}):
             with self.assertRaisesRegex(

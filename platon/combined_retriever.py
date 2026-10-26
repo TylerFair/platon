@@ -363,6 +363,24 @@ class CombinedRetriever:
                         loc=mean, scale=std, size=size)
         return values
 
+    def _batched_ln_like(self, transit_calc, eclipse_calc, fit_info,
+                         transit_depths, transit_errors, eclipse_depths,
+                         eclipse_errors, zero_opacities=(), batch_size=256):
+        """The batched likelihood for (batch, n_parameters) rows, or None.
+
+        Where the model supports it (two-sector Guillot transit retrievals),
+        it returns exactly what _ln_like returns for each row, evaluating many
+        rows per device call; otherwise samplers use _ln_like.
+        """
+        from ._batched_likelihood import BatchedLikelihood
+        try:
+            return BatchedLikelihood(
+                self, transit_calc, eclipse_calc, fit_info,
+                transit_depths, transit_errors, eclipse_depths, eclipse_errors,
+                zero_opacities=zero_opacities, batch_size=batch_size)
+        except (ValueError, AtmosphereError):
+            return None
+
     def _with_nuisance(self, rows, fit_info, full_fit_info, like_args, mode=False):
         """Rows of fit_info's parameters as rows of full_fit_info's, each
         integrated-out parameter drawn from its posterior given the rest of
@@ -1161,7 +1179,9 @@ class CombinedRetriever:
         directly to :class:`nautilus.Sampler`.  marginalize_nuisance is as
         for run_dynesty; when it applies, the returned equal-weight samples
         are n_eff random rows of the resampled posterior, each with its
-        integrated-out parameters drawn from their posterior.
+        integrated-out parameters drawn from their posterior.  Two-sector
+        Guillot transit retrievals evaluate each batch of points at once
+        (vectorized), with exactly the scalar likelihood's values.
         """
         try:
             from nautilus import Sampler
@@ -1201,6 +1221,18 @@ class CombinedRetriever:
                 params, transit_calc, eclipse_calc, fit_info,
                 transit_depths, transit_errors, eclipse_depths, eclipse_errors,
                 zero_opacities=zero_opacities)
+
+        # Where it applies, evaluate Nautilus's batches of points at once;
+        # the likelihood values, and so the run, are unchanged
+        batched = self._batched_ln_like(
+            transit_calc, eclipse_calc, fit_info, transit_depths,
+            transit_errors, eclipse_depths, eclipse_errors, zero_opacities)
+        if batched is not None:
+            def transform_prior(cube):
+                return np.array([fit_info._from_unit_interval_array(row)
+                                 for row in cube])
+            nautilus_ln_like = batched
+            nautilus_kwargs["vectorized"] = True
 
         sampler = Sampler(
             transform_prior, nautilus_ln_like,
