@@ -295,6 +295,79 @@ class TestBatchedLikelihood(unittest.TestCase):
                     self.assertGreater(np.sum(batch.last_reasons == ""), 8, label)
                     self.assertEqual(batch.last_depths.shape, (24, 1, n), label)
 
+    def test_matches_scalar_vmrs_on_equilibrium(self):
+        """Free constant VMRs on top of equilibrium chemistry (shared or per
+        sector), and per-sector free VMRs with a filler: batched rows equal
+        _ln_like exactly, with the same rejections."""
+        low, high, depths, errors = np.loadtxt(
+            "tests/testing_data/hd209458b_transit_depths", unpack=True)
+        bins = np.array([low, high]).T
+        n = len(depths)
+        calc = TransitDepthCalculator()
+        calc.change_wavelength_bins(bins)
+        retriever = CombinedRetriever()
+        rng = np.random.default_rng(1939)
+        Rs, a, Mp, Rp = 1.19 * R_sun, 7e9, 0.73 * M_jup, 1.4 * R_jup
+        shared = dict(T_star=6000, Rs=Rs, a=a, Mp=Mp, Rp=Rp, log_k_th=-2, T_int=100)
+        guillot = TwoSectorTerminator(*[TerminatorSector(
+            Profile.guillot(**shared, beta=beta, log_gamma=-1), cloudtop_pressure=1e5)
+            for beta in (.7, .9)])
+        isothermal = TwoSectorTerminator(*[TerminatorSector(
+            Profile.isothermal(T), cloudtop_pressure=1e5) for T in (1000, 1300)])
+        cases = {
+            # WASP-39b-like: Guillot limbs with time shifts, shared logZ and C/O,
+            # one shared free SO2 on top, integrated offsets and error_excess
+            "guillot, shared SO2 on equilibrium": dict(
+                fit=dict(T_star=6000, logZ=1, CO_ratio=.5, fit_vmr=True,
+                         transit_terminator=guillot, a=a, b=.3, period=3.5 * 86400,
+                         time_shifts=rng.normal(0, 10, n), time_shift_errors=np.full(n, 10.),
+                         time_shift_offsets={"t0": (0, n)},
+                         transit_offsets={"off_a": (n // 3, 2 * n // 3), "off_b": (2 * n // 3, n)}),
+                gases=(["SO2"], False),
+                sector_priors={"beta": (.6, 1.), "log_gamma": (-1.5, 0)},
+                priors={"log_k_th": (-2.5, -1), "T_int": (50, 300), "logZ": (-1, 2),
+                        "CO_ratio": (.2, 1), "off_a": (-1e-3, 1e-3), "off_b": (-1e-3, 1e-3),
+                        "t0": (-50, 50)}),
+            "isothermal, per-sector gases on equilibrium": dict(
+                fit=dict(logZ=1, CO_ratio=.5, fit_vmr=True, transit_terminator=isothermal),
+                gases=(["SO2", "H2O"], True), sector_priors={"T": (700, 1800)},
+                priors={"logZ": (-1, 2), "CO_ratio": (.2, 1)}),
+            "isothermal, per-sector free VMRs": dict(
+                fit=dict(logZ=None, CO_ratio=None, fit_vmr=True, transit_terminator=isothermal),
+                gases=(["H2O", "CO2", "CO", "H2-He"], True), sector_priors={"T": (700, 1800)},
+                priors={}),
+            "1-D isothermal, SO2 on equilibrium": dict(
+                fit=dict(T=1200, logZ=1, CO_ratio=.5, fit_vmr=True, log_cloudtop_P=5),
+                gases=(["SO2"], False), sector_priors={},
+                priors={"T": (800, 1800), "logZ": (-1, 2), "CO_ratio": (.2, 1),
+                        "log_cloudtop_P": (2, 6), "log_scatt_factor": (0, 2),
+                        "scatt_slope": (2, 6)})}
+        for label, case in cases.items():
+            full = CombinedRetriever.get_default_fit_info(Rs=Rs, Mp=Mp, Rp=Rp, **case["fit"])
+            gases, per_sector = case["gases"]
+            full.add_gases_vmr(gases, 1e-10, 1e-2, per_sector=per_sector)
+            if "transit_terminator" in case["fit"]:
+                for sector in ("sector1.", "sector2."):
+                    for name, bounds in dict(case["sector_priors"], log_cloudtop_P=(2, 6),
+                                             log_scatt_factor=(0, 2), scatt_slope=(2, 6)).items():
+                        full.add_uniform_fit_param(sector + name, *bounds)
+            for name, bounds in dict(case["priors"], Rp=(1.3 * R_jup, 1.5 * R_jup),
+                                     error_excess=(0, 1e-4)).items():
+                full.add_uniform_fit_param(name, *bounds)
+            fit = CombinedRetriever._marginalize(full)
+            batch = retriever._batched_ln_like(calc, None, fit, depths, errors, None, None,
+                                               batch_size=16)
+            self.assertIsNotNone(batch, label)
+            self.assertEqual(batch.per_sector_gases, per_sector, label)
+            rows = np.array([fit._from_unit_interval_array(u) for u in
+                             rng.uniform(.02, .98, (24, len(fit.fit_param_names)))])
+            expected = np.array([retriever._ln_like(row, calc, None, fit, depths, errors,
+                                                    None, None) for row in rows])
+            actual = batch(rows)
+            self.assertGreater(np.isfinite(expected).sum(), 8, label)
+            np.testing.assert_array_equal(actual, expected, err_msg=label)
+            self.assertGreater(np.sum(batch.last_reasons == ""), 8, label)
+
     def test_all_rejected_and_empty_batch(self):
         evaluator = object.__new__(BatchedLikelihood)
         evaluator.depths = np.zeros(3)
