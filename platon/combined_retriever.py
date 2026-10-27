@@ -26,8 +26,11 @@ from .terminator import TwoSectorTerminator, label_by_temperature, limb_time_shi
 from .retrieval_result import RetrievalResult
 from .custom_dynesty_result import CustomDynestyResult
 
-# Nodes spanning the prior range of each integrated-out error inflation
-N_INFLATION_NODES = 2049
+# Nodes spanning the prior range of an integrated-out error_excess
+N_EXCESS_NODES = 2049
+# err**2 + s**2 at those nodes and half the sum of its log, which depend only
+# on the data errors and the prior: kept for a few error arrays
+_EXCESS_VARIANCES = {}
 
 
 class CombinedRetriever:
@@ -174,42 +177,22 @@ class CombinedRetriever:
                 depths[start:end] += params_dict[name]
 
     @staticmethod
-    def _error_factors(params_dict, kind, n_points):
-        """Factor multiplying each error of the kind's data ("transit",
-        "eclipse" or "time_shift"): 10**log_error_inflation for depths, times
-        10**x for the range in params_dict[kind + "_error_inflations"] that
-        holds the point, if any."""
-        log_factors = np.zeros(n_points)
-        if kind != "time_shift":
-            log_factors += params_dict.get("log_error_inflation", 0)
-        for name, (start, end) in \
-                (params_dict.get(kind + "_error_inflations") or {}).items():
-            log_factors[start:end] += params_dict[name]
-        return 10**log_factors
-
-    @staticmethod
     def _marginalize(fit_info):
         """Returns a copy of fit_info that does not sample the fitted offsets
-        or the error inflations with uniform priors; _ln_like integrates them
+        or a fitted error_excess with a uniform prior; _ln_like integrates them
         out over their priors instead (see _nuisance_ln_like), so the evidence
         and the posterior of every other parameter are unchanged.  Returns
         fit_info itself if there is nothing to integrate out."""
-        offsets, per_range = set(), set()
+        offsets = set()
         for kind in ("transit", "eclipse", "time_shift"):
-            for names, key in ((offsets, kind + "_offsets"),
-                               (per_range, kind + "_error_inflations")):
-                param = fit_info.all_params.get(key)
-                if param is not None and param.best_guess is not None:
-                    names.update(param.best_guess)
-        inflations = per_range | {"log_error_inflation"}
+            param = fit_info.all_params.get(kind + "_offsets")
+            if param is not None and param.best_guess is not None:
+                offsets.update(param.best_guess)
         marginal = [name for name in fit_info.fit_param_names
-                    if name in offsets or (name in inflations and isinstance(
+                    if name in offsets or (name == "error_excess" and isinstance(
                         fit_info.all_params[name], _UniformParam))]
         if not marginal:
             return fit_info
-        if "log_error_inflation" in marginal and per_range & set(marginal):
-            raise ValueError("Fit either log_error_inflation or per-range "
-                             "error inflations, not both")
         reduced = copy.deepcopy(fit_info)
         reduced.fit_param_names = [name for name in fit_info.fit_param_names
                                    if name not in marginal]
@@ -228,86 +211,100 @@ class CombinedRetriever:
     def _nuisance_ln_like(fit_info, params_dict, blocks):
         """Gaussian log likelihood with fit_info.marginal_params integrated out
         over their priors.  blocks maps each data kind to (model - data,
-        errors), computed with those offsets at 0 and inflations at 1.
+        errors), computed with those offsets and error_excess at 0.
 
         The model is linear in each offset, so its integral is closed form.
-        An error inflation multiplies the errors of its data by b = 10**x, x
-        uniform, and is integrated over N_INFLATION_NODES values of x, taking
-        the log of the integrand as linear between them (_ln_cells).  Data
-        sharing an inflation (or having none) form a group; given b, each
-        group's likelihood depends only on sums over its data, and the groups
-        are independent.  Returns the log likelihood and, per group,
-        (inflation name or None, x nodes, log integrand at the nodes,
-        [(offset name, W, R)]) with W = sum 1/err^2 and R = sum (data -
-        model)/err^2 over the offset's data."""
+        error_excess, s, adds in quadrature to every transit and eclipse depth
+        error, sqrt(err**2 + s**2); with s uniform it is integrated over
+        N_EXCESS_NODES values of s, taking the log of the integrand as linear
+        between them (_ln_cells).  The depths form one group when error_excess
+        is integrated, and the remaining data (time shifts, or everything)
+        another; given s the groups are independent, and each offset lies in
+        one.  Returns the log likelihood and, per group, (excess name or None,
+        s nodes, log integrand at the nodes, [(offset name, model - data,
+        errors)] over each offset's data)."""
         marginal = fit_info.marginal_params
-        inflations, labels = [None], {}
+        excess = "error_excess" in marginal
+        members = [[], []]  # (kind, residuals, errors) without / with the excess
         for kind, (residuals, errors) in blocks.items():
-            labels[kind] = np.zeros(len(residuals), int)
-            ranges = dict(params_dict.get(kind + "_error_inflations") or {})
-            if kind != "time_shift":
-                ranges["log_error_inflation"] = (0, len(residuals))
-            for name, (start, end) in ranges.items():
-                if name in marginal:
-                    if name not in inflations:
-                        inflations.append(name)
-                    labels[kind][start:end] = inflations.index(name)
-
-        n_groups = len(inflations)
-        chi2, ln_errors, counts = np.zeros((3, n_groups))
-        offsets = {}
-        for kind, (residuals, errors) in blocks.items():
-            chi2 += np.bincount(labels[kind], (residuals / errors)**2, n_groups)
-            ln_errors += np.bincount(labels[kind], np.log(errors), n_groups)
-            counts += np.bincount(labels[kind], minlength=n_groups)
-            for name, (start, end) in \
-                    (params_dict.get(kind + "_offsets") or {}).items():
-                if name not in marginal:
-                    continue
-                W, R, group = offsets.get(name, (0, 0, set()))
-                group = group | set(labels[kind][start:end])
-                weights = errors[start:end]**-2
-                offsets[name] = (W + weights.sum(),
-                                 R - (weights * residuals[start:end]).sum(), group)
+            members[excess and kind != "time_shift"].append((kind, residuals, errors))
 
         ln_like, groups = 0, []
-        for g, name in enumerate(inflations):
+        for g, group in enumerate(members):
+            if not group:
+                continue
+            name = "error_excess" if g else None
             if name is None:
-                x = np.zeros(1)
+                s = np.zeros(1)
             else:
                 prior = fit_info.all_params[name]
-                x = np.linspace(prior.low_lim, prior.high_lim, N_INFLATION_NODES)
-            b = 10**x
-            terms = -0.5 * chi2[g] / b**2 - ln_errors[g] - counts[g] * np.log(b) \
-                - 0.5 * counts[g] * np.log(2 * np.pi)
+                s = np.linspace(prior.low_lim, prior.high_lim, N_EXCESS_NODES)
+            if name is None:
+                # Sequential sums, in this order, as the batched likelihood
+                # reproduces them bit for bit
+                chi2, ln_errors, counts = np.zeros(3)
+                for kind, residuals, errors in group:
+                    first = np.zeros(len(residuals), int)
+                    chi2 += np.bincount(first, (residuals / errors)**2, 1)[0]
+                    ln_errors += np.bincount(first, np.log(errors), 1)[0]
+                    counts += len(residuals)
+                terms = np.full(1, -0.5 * chi2 - ln_errors - 0.5 * counts * np.log(2 * np.pi))
+            else:
+                terms = np.zeros(len(s))
+                for kind, residuals, errors in group:
+                    variance, half_ln = CombinedRetriever._excess_variance(errors, s)
+                    terms += -0.5 * np.sum(residuals[None, :]**2 / variance, axis=1) \
+                        - half_ln - 0.5 * len(residuals) * np.log(2 * np.pi)
             group_offsets = []
-            for offset, (W, R, group) in offsets.items():
-                if W == 0:
-                    raise ValueError("Offset {} covers no data".format(offset))
-                if len(group) > 1:
-                    raise ValueError(
-                        "Offset {} spans data with different error inflations, "
-                        "so it cannot be integrated out".format(offset))
-                if g not in group:
-                    continue
-                prior = fit_info.all_params[offset]
-                mean, std = R / W, b / np.sqrt(W)
-                terms = terms + 0.5 * R * mean / b**2 + np.log(np.sqrt(2 * np.pi) * std)
-                if isinstance(prior, _GaussianParam):
-                    terms += scipy.stats.norm.logpdf(
-                        mean, prior.best_guess, np.hypot(std, prior.std))
-                else:
-                    terms += CombinedRetriever._log_ndtr_diff(
-                        (prior.high_lim - mean) / std, (prior.low_lim - mean) / std) \
-                        - np.log(prior.high_lim - prior.low_lim)
-                group_offsets.append((offset, W, R))
+            for kind, residuals, errors in group:
+                for offset, (start, end) in \
+                        (params_dict.get(kind + "_offsets") or {}).items():
+                    if offset not in marginal:
+                        continue
+                    r, e = residuals[start:end], errors[start:end]
+                    if len(r) == 0:
+                        raise ValueError("Offset {} covers no data".format(offset))
+                    W, R = CombinedRetriever._offset_sums(r, e, s)
+                    prior = fit_info.all_params[offset]
+                    mean, std = R / W, 1 / np.sqrt(W)
+                    terms = terms + 0.5 * R * mean + np.log(np.sqrt(2 * np.pi) * std)
+                    if isinstance(prior, _GaussianParam):
+                        terms += scipy.stats.norm.logpdf(
+                            mean, prior.best_guess, np.hypot(std, prior.std))
+                    else:
+                        terms += CombinedRetriever._log_ndtr_diff(
+                            (prior.high_lim - mean) / std, (prior.low_lim - mean) / std) \
+                            - np.log(prior.high_lim - prior.low_lim)
+                    group_offsets.append((offset, r, e))
             if name is None:
                 ln_like += terms[0]
             else:  # the cells' widths times the uniform prior density
                 ln_like += scipy.special.logsumexp(CombinedRetriever._ln_cells(
-                    terms)) - np.log(N_INFLATION_NODES - 1)
-            groups.append((name, x, terms, group_offsets))
+                    terms)) - np.log(N_EXCESS_NODES - 1)
+            groups.append((name, s, terms, group_offsets))
         return ln_like, groups
+
+    @staticmethod
+    def _excess_variance(errors, s):
+        """(errors**2 + s**2 at each node s, half the sum of its log over the
+        data), computed once per error array and node grid."""
+        key = (np.asarray(errors).tobytes(), len(errors), s[0], s[-1], len(s))
+        if key not in _EXCESS_VARIANCES:
+            if len(_EXCESS_VARIANCES) >= 8:
+                _EXCESS_VARIANCES.pop(next(iter(_EXCESS_VARIANCES)))
+            variance = errors[None, :]**2 + s[:, None]**2
+            _EXCESS_VARIANCES[key] = variance, 0.5 * np.sum(np.log(variance), axis=1)
+        return _EXCESS_VARIANCES[key]
+
+    @staticmethod
+    def _offset_sums(residuals, errors, s):
+        """W = sum 1/var and R = sum (data - model)/var over an offset's data,
+        with var = errors**2 + s**2, for each value of the error excess s."""
+        if np.all(s == 0):
+            weights = errors**-2
+            return np.full(len(s), weights.sum()), np.full(len(s), -(weights * residuals).sum())
+        weights = 1 / (errors[None, :]**2 + np.asarray(s)[:, None]**2)
+        return weights.sum(axis=1), -(weights * residuals[None, :]).sum(axis=1)
 
     @staticmethod
     def _ln_cells(ln_f):
@@ -325,14 +322,14 @@ class CombinedRetriever:
     def _draw_nuisance(fit_info, groups, size, mode=False):
         """size draws of each integrated-out parameter from its posterior given
         the other parameters, as a dict of arrays; with mode, its conditional
-        mode instead (the most probable inflation node, then the offsets'
+        mode instead (the most probable error_excess node, then the offsets'
         mode given it).  groups is from _nuisance_ln_like."""
         values = {}
         for name, x, ln_f, offsets in groups:
             if name is None:
-                inflation = np.zeros(size)
+                excess = np.zeros(size)
             elif mode:
-                inflation = np.full(size, x[np.argmax(ln_f)])
+                excess = np.full(size, x[np.argmax(ln_f)])
             else:
                 # a cell, then a point in it from the log-linear density
                 ln_cells = CombinedRetriever._ln_cells(ln_f)
@@ -343,14 +340,14 @@ class CombinedRetriever:
                     t = np.where(np.abs(slope) < 1e-8, u, np.where(
                         slope > 0, 1 + np.log(u + (1 - u) * np.exp(-slope)) / slope,
                         np.log1p(u * np.expm1(slope)) / slope))
-                inflation = x[cell] + t * (x[1] - x[0])
+                excess = x[cell] + t * (x[1] - x[0])
             if name is not None:  # inside the open prior interval
-                inflation = values[name] = np.clip(
-                    inflation, np.nextafter(x[0], x[-1]), np.nextafter(x[-1], x[0]))
-            b = 10**inflation
-            for offset, W, R in offsets:
+                excess = values[name] = np.clip(
+                    excess, np.nextafter(x[0], x[-1]), np.nextafter(x[-1], x[0]))
+            for offset, r, e in offsets:
                 prior = fit_info.all_params[offset]
-                mean, std = np.full(size, R / W), b / np.sqrt(W)
+                W, R = CombinedRetriever._offset_sums(r, e, excess)
+                mean, std = R / W, 1 / np.sqrt(W)
                 if isinstance(prior, _GaussianParam):
                     var = 1 / (std**-2 + prior.std**-2)
                     mean = var * (mean / std**2 + prior.best_guess / prior.std**2)
@@ -555,8 +552,7 @@ class CombinedRetriever:
 
                 self._apply_offsets(calculated_transit_depths, params_dict, "transit")
                 residuals = calculated_transit_depths - measured_transit_depths
-                scaled_errors = np.sqrt(measured_transit_errors**2 + error_excess**2) * \
-                    self._error_factors(params_dict, "transit", len(residuals))
+                scaled_errors = np.sqrt(measured_transit_errors**2 + error_excess**2)
                 blocks["transit"] = residuals, scaled_errors
                 ln_likelihood = np.append(ln_likelihood, -0.5 * (residuals**2 / scaled_errors**2 + np.log(2 * np.pi * scaled_errors**2)))
 
@@ -569,8 +565,7 @@ class CombinedRetriever:
                         if coefficients is None else coefficients * (np.sqrt(trailing) - np.sqrt(leading))
                     self._apply_offsets(shifts, params_dict, "time_shift")
                     residuals = shifts - params_dict["time_shifts"]
-                    errors = params_dict["time_shift_errors"] * \
-                        self._error_factors(params_dict, "time_shift", len(residuals))
+                    errors = params_dict["time_shift_errors"]
                     blocks["time_shift"] = residuals, errors
                     ln_likelihood = np.append(ln_likelihood, -0.5 * (residuals**2 / errors**2 + np.log(2 * np.pi * errors**2)))
                     if ret_best_fit:
@@ -597,8 +592,7 @@ class CombinedRetriever:
                     part_size = part_size, ri=ri, P_quench=P_quench, full_output=ret_best_fit, zero_opacities=zero_opacities)
                 self._apply_offsets(calculated_eclipse_depths, params_dict, "eclipse")
                 residuals = calculated_eclipse_depths - measured_eclipse_depths
-                scaled_errors = np.sqrt(measured_eclipse_errors**2 + error_excess**2) * \
-                    self._error_factors(params_dict, "eclipse", len(residuals))
+                scaled_errors = np.sqrt(measured_eclipse_errors**2 + error_excess**2)
                 blocks["eclipse"] = residuals, scaled_errors
                 ln_likelihood = np.append(ln_likelihood, -0.5 * (residuals**2 / scaled_errors**2 + np.log(2 * np.pi * scaled_errors**2)))
 
@@ -747,9 +741,9 @@ class CombinedRetriever:
         zero_opacities : list of strings
             List of molecules to zero opacities for
         marginalize_nuisance : bool, optional
-            Integrate the fitted offsets and the error inflations with
-            uniform priors out of the likelihood instead of sampling them
-            (see the "Offsets and error inflations" section of the docs).
+            Integrate the fitted offsets, and error_excess if fitted with a
+            uniform prior, out of the likelihood instead of sampling them
+            (see the "Offsets and error excess" section of the docs).
             The returned samples include them, drawn from their posterior.
 
         Returns
@@ -910,9 +904,9 @@ class CombinedRetriever:
         zero_opacities : list of strings                                                                                                                                                                   
             List of molecules to zero opacities for
         marginalize_nuisance : bool, optional
-            Integrate the fitted offsets and the error inflations with
-            uniform priors out of the likelihood instead of sampling them
-            (see the "Offsets and error inflations" section of the docs).
+            Integrate the fitted offsets, and error_excess if fitted with a
+            uniform prior, out of the likelihood instead of sampling them
+            (see the "Offsets and error excess" section of the docs).
             The returned samples include them, drawn from their posterior.
         **dynesty_kwargs : keyword arguments to pass to dynesty's NestedSampler
 
@@ -1309,9 +1303,6 @@ class CombinedRetriever:
                              transit_visits=None,
                              time_shifts=None, time_shift_errors=None, period=None, b=None,
                              time_shift_offsets=None, time_shift_coefficients=None,
-                             log_error_inflation=0, transit_error_inflations=None,
-                             eclipse_error_inflations=None,
-                             time_shift_error_inflations=None,
                              **profile_kwargs):
         '''Get a :class:`.FitInfo` object filled with best guess values.  A few
         parameters are required, but others can be set to default values if you
@@ -1336,17 +1327,9 @@ class CombinedRetriever:
             quadrature to every measured error: the likelihood uses
             sqrt(error**2 + error_excess**2).  Fit for it (e.g. with a
             uniform prior from 0 to 1e-4) to account for underestimated
-            errors or scatter the model cannot explain.
-        log_error_inflation : float
-            log10 of a factor multiplying every transit and eclipse depth
-            error (after error_excess).  Fit it with a uniform prior, e.g.
-            fit_info.add_uniform_fit_param("log_error_inflation", -0.3, 0.7).
-        transit_error_inflations, eclipse_error_inflations,
-        time_shift_error_inflations : dict, optional
-            Per-instrument error inflations, given like transit_offsets: each
-            name is the log10 of a factor multiplying the errors of its range
-            of data, defaults to 0 and is fit like log_error_inflation.  Fit
-            either these or log_error_inflation, not both.
+            errors or scatter the model cannot explain; with a uniform prior
+            the retrievers integrate it out of the likelihood.  Errors are
+            only ever inflated this way, in quadrature, never by a factor.
         transit_offsets : dict, optional
             Per-instrument offsets for transit data, as a dict mapping each
             offset parameter name to the (start, end) indices of the data it
@@ -1375,8 +1358,8 @@ class CombinedRetriever:
             the true mid-transit time minus the reference time for its range;
             fit it unless the reference is the true mid-transit time.
 
-            The retrievers integrate every fitted offset, and every error
-            inflation with a uniform prior, out of the likelihood rather than
+            The retrievers integrate every fitted offset, and error_excess if
+            fitted with a uniform prior, out of the likelihood rather than
             sampling it (see their marginalize_nuisance argument).
         time_shift_coefficients : array, optional
             Calibrated shift per unit trailing-minus-leading radius, in s per
@@ -1450,10 +1433,7 @@ class CombinedRetriever:
         for kind, what, ranges in (
                 ("transit", "offsets", transit_offsets),
                 ("eclipse", "offsets", eclipse_offsets),
-                ("time_shift", "offsets", time_shift_offsets),
-                ("transit", "error inflations", transit_error_inflations),
-                ("eclipse", "error inflations", eclipse_error_inflations),
-                ("time_shift", "error inflations", time_shift_error_inflations)):
+                ("time_shift", "offsets", time_shift_offsets)):
             if ranges is None:
                 continue
             for name, index_range in ranges.items():

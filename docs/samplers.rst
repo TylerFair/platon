@@ -108,37 +108,30 @@ posterior widths.  In a PLATON benchmark, `Savel et al. (2026)
 posterior widths by about 10% and that its standard evidence was less accurate
 and precise than Nautilus under the tested settings.
 
-Offsets and error inflations
-============================
+Offsets and error excess
+========================
 
-Instrument offsets and error inflations are nuisance parameters: every
+Instrument offsets and an excess error are nuisance parameters: every
 sampler would otherwise spend dimensions on them.  Each offset shifts its
 range of data by a constant, so with Gaussian errors its integral over the
-prior is closed form.  Each error inflation multiplies the errors of its data
-by ``10**x``; with ``x`` uniform, its integral is one-dimensional, and PLATON
-evaluates it from a few sums over the data on a fine grid of ``x``, which is
-accurate to well below 0.01 in ln(likelihood).  So all four retrievers
-integrate every fitted offset, and every error inflation with a uniform
-prior, out of the likelihood by default.  The evidence and the posterior of
-every other parameter are unchanged; the sampler just has fewer dimensions.
-Set ``marginalize_nuisance=False`` to sample them instead.
-
-Error inflations are set up like offsets::
+prior is closed form.  ``error_excess`` adds in quadrature to every transit
+and eclipse depth error, ``sqrt(error**2 + error_excess**2)``; errors are only
+ever inflated this way, never by a factor.  With a uniform prior its integral
+is one-dimensional, and PLATON evaluates it on a fine grid over the prior,
+accurate to well below 0.01 in ln(likelihood), with the offsets integrated in
+closed form at each grid value.  So all four retrievers integrate every fitted
+offset, and ``error_excess`` if fitted with a uniform prior, out of the
+likelihood by default.  The evidence and the posterior of every other
+parameter are unchanged; the sampler just has fewer dimensions.  Set
+``marginalize_nuisance=False`` to sample them instead::
 
   fit_info = retriever.get_default_fit_info(
       ...,
-      transit_offsets={"offset_nrs1": (n_soss, n_soss + n_nrs1)},
-      transit_error_inflations={"log_infl_soss": (0, n_soss),
-                                "log_infl_nrs1": (n_soss, n_soss + n_nrs1)})
+      transit_offsets={"offset_nrs1": (n_soss, n_soss + n_nrs1)})
   fit_info.add_uniform_fit_param("offset_nrs1", -1e-3, 1e-3)
-  fit_info.add_uniform_fit_param("log_infl_soss", -0.3, 0.7)
-  fit_info.add_uniform_fit_param("log_infl_nrs1", -0.3, 0.7)
+  fit_info.add_uniform_fit_param("error_excess", 0, 1e-3)
 
-``log_error_inflation`` instead inflates every transit and eclipse error by
-one factor; fit either it or per-instrument inflations, not both.
-``time_shift_error_inflations`` does the same for time shifts.  An offset
-whose data have more than one error inflation cannot be integrated out, and
-raises an error.
+Time shifts have no excess error.
 
 The returned samples still include the integrated-out parameters: after
 sampling, each one is drawn from its exact posterior given the other
