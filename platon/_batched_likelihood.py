@@ -5,9 +5,10 @@ parametric profiles.
 CombinedRetriever's samplers use this batch wherever it applies; it returns
 the scalar likelihood's values exactly.  It deliberately checks its
 supported model family:
-equilibrium abundances, or free vertically constant VMRs with a filler gas;
-fitted (partial) or fixed full cloud cover per sector; at most one
-unocculted stellar heterogeneity.  Unsupported physics/settings raise at
+equilibrium abundances, free vertically constant VMRs with a filler gas, or
+free VMRs on top of equilibrium, shared or per sector; fitted (partial) or
+fixed full cloud cover per sector, or a 1-D patchy cloud_fraction; at most
+one unocculted stellar heterogeneity.  Unsupported physics/settings raise at
 construction, and rows the batch cannot reproduce exactly are evaluated by
 the scalar likelihood, instead of silently using an approximate forward or
 changing the scalar likelihood.
@@ -94,16 +95,20 @@ class BatchedLikelihood:
         if self.profile_type not in PROFILE_PARAMS:
             raise ValueError("Batched likelihood requires Guillot, isothermal or parametric "
                              "transit profiles")
-        # Free VMRs replace equilibrium chemistry entirely; the last gas is the filler
+        # Free VMRs either replace equilibrium chemistry entirely (the last gas
+        # is the filler) or, with logZ and CO_ratio set, replace the listed
+        # gases' equilibrium abundances; either may be shared or per sector
+        on_eq = p["logZ"] is not None and p["CO_ratio"] is not None
         self.free_vmr = bool(p["fit_vmr"]) and p["logZ"] is None and p["CO_ratio"] is None
-        if p["fit_clr"] or (p["fit_vmr"] and not self.free_vmr) or \
-           (not self.free_vmr and (p["logZ"] is None or p["CO_ratio"] is None)):
-            raise ValueError("Batched likelihood requires equilibrium abundances, "
-                             "or free VMRs with a filler gas")
-        self.gases = list(fit_info.gases) if self.free_vmr else None
-        if self.free_vmr and any(s + "log_" + gas in fit_info.all_params
-                                 for s in SECTORS for gas in self.gases):
-            raise ValueError("Batched likelihood does not support per-sector abundances")
+        if p["fit_clr"] or (p["fit_vmr"] and not (self.free_vmr or on_eq)) or \
+           (not p["fit_vmr"] and not on_eq):
+            raise ValueError("Batched likelihood requires equilibrium abundances, free VMRs "
+                             "with a filler gas, or free VMRs on top of equilibrium")
+        self.gases = list(fit_info.gases) if p["fit_vmr"] else None
+        # The fitted gases: all of them on top of equilibrium, all but the filler otherwise
+        self.n_free = 0 if self.gases is None else len(self.gases) - self.free_vmr
+        self.per_sector_gases = self.gases is not None and not self.one_d and any(
+            s + "log_" + gas in fit_info.all_params for s in SECTORS for gas in self.gases)
         if p.get("n") is not None:
             raise ValueError("Batched likelihood does not support Mie scattering")
         if not self.one_d and p["cloud_fraction"] != 1:
@@ -125,10 +130,11 @@ class BatchedLikelihood:
                      "error_excess"}
         if self.profile_type == "guillot":
             supported.update(("log_k_th", "T_int"))
-        if self.free_vmr:
-            supported.update("log_" + gas for gas in self.gases[:-1])
-        else:
+        if not self.free_vmr:
             supported.update(("logZ", "CO_ratio"))
+        if self.gases is not None:
+            for prefix in SECTORS if self.per_sector_gases else ("",):
+                supported.update(prefix + "log_" + gas for gas in self.gases[:self.n_free])
         if self.one_d:
             # Profile.from_params_dict lets "_transit" names override them
             profile_names = PROFILE_PARAMS[self.profile_type] + \
@@ -163,9 +169,11 @@ class BatchedLikelihood:
             prior = fit_info.all_params["het_cov_frac"]
             het_cov_frac = 0.5 * (prior.low_lim + prior.high_lim)
         vmrs = None
-        if self.free_vmr:
-            vmrs = [10.0**p["log_" + gas] for gas in self.gases[:-1]]
-            vmrs.append(1 - np.sum(vmrs))
+        if self.gases is not None:
+            prefix = "sector1." if self.per_sector_gases else ""
+            vmrs = [10.0**p[prefix + "log_" + gas] for gas in self.gases[:self.n_free]]
+            if self.free_vmr:
+                vmrs.append(1 - np.sum(vmrs))
         cfg, pin, _ = prepare_forward_inputs(
             transit_calc.atm, star_radius=p["Rs"], planet_mass=p["Mp"],
             planet_radius=p["Rp"], P_profile=self.pressures,
@@ -187,7 +195,7 @@ class BatchedLikelihood:
         self.cloudtop_range = (float(transit_calc.atm.P_grid.min()),
                                float(transit_calc.atm.P_grid.max()))
         self.data = transit_calc.atm.device_data()
-        self.forward = make_forward(cfg, dual=self.dual, with_vmrs=self.free_vmr)
+        self.forward = make_forward(cfg, dual=self.dual, with_vmrs=self.gases is not None)
         self.last_depths = None
         self.last_reasons = None
 
@@ -312,12 +320,18 @@ class BatchedLikelihood:
         if self.dual:
             fallback |= ~np.all((clouds > 0) & (clouds < 1), axis=1)
         vmrs = None
-        if self.free_vmr:
-            vmrs = np.empty((size, len(self.gases)))
-            vmrs[:, :-1] = _scalar_power(10.0, np.stack(
-                [column("log_" + gas) for gas in self.gases[:-1]], axis=1))
-            vmrs[:, -1] = [1 - np.sum(row) for row in vmrs[:, :-1]]
-            reject(vmrs[:, -1] < 0, "filler")
+        if self.gases is not None:
+            # (size, 1 or 2 lanes, gases): shared by a row's sectors, or per sector
+            lanes_vmrs = []
+            for prefix in SECTORS if self.per_sector_gases else ("",):
+                lane = np.empty((size, len(self.gases)))
+                lane[:, :self.n_free] = _scalar_power(10.0, np.stack(
+                    [column(prefix + "log_" + gas) for gas in self.gases[:self.n_free]], axis=1))
+                if self.free_vmr:
+                    lane[:, -1] = [1 - np.sum(row) for row in lane[:, :-1]]
+                    reject(lane[:, -1] < 0, "filler")
+                lanes_vmrs.append(lane)
+            vmrs = np.stack(lanes_vmrs, axis=1)
         reject((column("Rs") <= 0) | (column("Mp") <= 0), "mass")
 
         p = self.pressures
@@ -568,8 +582,10 @@ class BatchedLikelihood:
                 return np.concatenate([x, np.repeat(x[-1:], capacity - len(x), axis=0)])
             inputs = [pad(packed[indices]).reshape(-1, packed.shape[-1])]
             if vmrs is not None:
-                # Both sectors of a row share its abundances
-                inputs.append(np.repeat(pad(vmrs[indices]), lanes, axis=0))
+                # One abundance row per lane: a row's sectors share it, or have their own
+                lane_vmrs = pad(vmrs[indices])
+                inputs.append(np.repeat(lane_vmrs[:, 0], lanes, axis=0) if lane_vmrs.shape[1] == 1
+                              else lane_vmrs.reshape(-1, lane_vmrs.shape[-1]))
             raw = np.asarray(self.forward(self.data, *inputs))
             raw = raw.reshape(capacity, lanes, -1)[:len(indices)]
             reasons[indices[np.any(raw[:, :, -2] != 0, axis=1)]] = UNBOUND
