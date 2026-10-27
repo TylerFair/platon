@@ -517,6 +517,7 @@ class BatchedLikelihood:
         result = np.full(len(rows), -np.inf)
         nbin = len(self.depths)
         limb_depths = np.full((len(rows), len(self.prefixes), nbin), np.nan)
+        marginal_rows = []
         for j, i in enumerate(indices):
             if np.any(raw[j, :, -2] != 0):
                 continue
@@ -543,11 +544,15 @@ class BatchedLikelihood:
                 errors = p["time_shift_errors"]
                 blocks["time_shift"] = shifts - p["time_shifts"], errors
             if getattr(self.fit, "marginal_params", ()):
-                result[i], _ = self.retriever._nuisance_ln_like(self.fit, p, blocks)
+                marginal_rows.append((i, p, blocks))
             else:
                 terms = np.concatenate([-0.5 * (r**2 / e**2 + np.log(2 * np.pi * e**2))
                                         for r, e in blocks.values()])
                 result[i] = terms.sum()
+        if marginal_rows:
+            # All rows' nuisance integrals at once, equal to _nuisance_ln_like row by row
+            rows_i, params, blocks_rows = zip(*marginal_rows)
+            result[list(rows_i)] = self.retriever._nuisance_ln_like_rows(self.fit, params, blocks_rows)
         self.last_depths = limb_depths
         return result
 

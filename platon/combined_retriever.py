@@ -292,6 +292,59 @@ class CombinedRetriever:
         return ln_like, groups
 
     @staticmethod
+    def _nuisance_ln_like_rows(fit_info, params_dicts, blocks_rows):
+        """_nuisance_ln_like's log likelihood for many rows of one fit, equal
+        bit for bit but much faster.  The rows share the data errors, so the
+        error-excess group's elementwise terms, its offsets' closed-form terms
+        and its sum over the nodes run on (rows x nodes) arrays; the
+        matrix-vector products, and the group without the excess, are still
+        computed one row at a time exactly as in _nuisance_ln_like."""
+        marginal = fit_info.marginal_params
+        if "error_excess" not in marginal:
+            return np.array([CombinedRetriever._nuisance_ln_like(fit_info, p, b)[0]
+                             for p, b in zip(params_dicts, blocks_rows)])
+        ln_like = np.zeros(len(blocks_rows))
+        if "time_shift" in blocks_rows[0]:
+            ln_like = ln_like + np.array([CombinedRetriever._nuisance_ln_like(
+                fit_info, p, {"time_shift": b["time_shift"]})[0]
+                for p, b in zip(params_dicts, blocks_rows)])
+        kinds = [kind for kind in blocks_rows[0] if kind != "time_shift"]
+        if not kinds:
+            return ln_like
+        prior = fit_info.all_params["error_excess"]
+        s = np.linspace(prior.low_lim, prior.high_lim, N_EXCESS_NODES)
+        terms = np.zeros((len(blocks_rows), len(s)))
+        for kind in kinds:
+            errors = blocks_rows[0][kind][1]
+            assert all(np.array_equal(b[kind][1], errors) for b in blocks_rows[1:])
+            inverse, half_ln = CombinedRetriever._excess_variance(errors, s)
+            products = np.stack([inverse @ b[kind][0]**2 for b in blocks_rows])
+            terms += -0.5 * products - half_ln - 0.5 * len(errors) * np.log(2 * np.pi)
+        for kind in kinds:
+            errors = blocks_rows[0][kind][1]
+            for offset, (start, end) in \
+                    (params_dicts[0].get(kind + "_offsets") or {}).items():
+                if offset not in marginal:
+                    continue
+                if end <= start:
+                    raise ValueError("Offset {} covers no data".format(offset))
+                weights = CombinedRetriever._excess_variance(errors, s)[0][:, start:end]
+                W = CombinedRetriever._excess_weight_sum(errors, s, start, end)
+                R = np.stack([-(weights @ b[kind][0][start:end]) for b in blocks_rows])
+                prior = fit_info.all_params[offset]
+                mean, std = R / W, 1 / np.sqrt(W)
+                terms = terms + 0.5 * R * mean + np.log(np.sqrt(2 * np.pi) * std)
+                if isinstance(prior, _GaussianParam):
+                    terms += scipy.stats.norm.logpdf(
+                        mean, prior.best_guess, np.hypot(std, prior.std))
+                else:
+                    terms += CombinedRetriever._log_ndtr_diff(
+                        (prior.high_lim - mean) / std, (prior.low_lim - mean) / std) \
+                        - np.log(prior.high_lim - prior.low_lim)
+        return ln_like + (scipy.special.logsumexp(CombinedRetriever._ln_cells(terms), axis=-1)
+                          - np.log(N_EXCESS_NODES - 1))
+
+    @staticmethod
     def _excess_variance(errors, s):
         """(1/(errors**2 + s**2) at each node s, as a C-contiguous (nodes x
         data) array, and half the sum of log(errors**2 + s**2) over the data),
@@ -331,11 +384,11 @@ class CombinedRetriever:
         """ln of the integral of f over each cell between equally spaced
         nodes, in units of the spacing, with ln f linear in each cell.  This is
         exact where f rises exponentially, e.g. toward a prior edge."""
-        d = np.diff(ln_f)
+        d = np.diff(ln_f, axis=-1)   # along the nodes (the last axis)
         a = np.abs(d)
         small = a < 1e-8
         a = np.where(small, 1, a)
-        return ln_f[:-1] + np.where(
+        return ln_f[..., :-1] + np.where(
             small, d / 2, np.maximum(d, 0) + np.log(-np.expm1(-a)) - np.log(a))
 
     @staticmethod
