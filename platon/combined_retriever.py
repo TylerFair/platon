@@ -185,6 +185,16 @@ class CombinedRetriever:
         return names
 
     @staticmethod
+    def _excess_squared(params_dict, kind, n_points):
+        """What adds to each squared error of the kind's depths: error_excess
+        squared, plus each excess in params_dict[kind + "_error_excesses"]
+        squared over its index range."""
+        squared = np.full(n_points, params_dict["error_excess"]**2, dtype=float)
+        for name, (start, end) in (params_dict.get(kind + "_error_excesses") or {}).items():
+            squared[start:end] += params_dict[name]**2
+        return squared
+
+    @staticmethod
     def _apply_offsets(depths, params_dict, kind):
         """Adds each named offset in params_dict[kind + "_offsets"] (kind is
         "transit", "eclipse" or "time_shift") to its index range of the model,
@@ -197,18 +207,22 @@ class CombinedRetriever:
     @staticmethod
     def _marginalize(fit_info):
         """Returns a copy of fit_info that does not sample the fitted offsets
-        or a fitted error_excess with a uniform prior; _ln_like integrates them
-        out over their priors instead (see _nuisance_ln_like), so the evidence
-        and the posterior of every other parameter are unchanged.  Returns
-        fit_info itself if there is nothing to integrate out."""
-        offsets = set()
+        or the fitted error excesses (error_excess and the per-range ones)
+        with uniform priors; _ln_like integrates them out over their priors
+        instead (see _nuisance_ln_like), so the evidence and the posterior of
+        every other parameter are unchanged.  Returns fit_info itself if there
+        is nothing to integrate out."""
+        offsets, excesses = set(), {"error_excess"}
         for kind in ("transit", "eclipse", "time_shift"):
-            param = fit_info.all_params.get(kind + "_offsets")
-            if param is not None and param.best_guess is not None:
-                offsets.update(param.best_guess)
+            for names, key in ((offsets, kind + "_offsets"), (excesses, kind + "_error_excesses")):
+                param = fit_info.all_params.get(key)
+                if param is not None and param.best_guess is not None:
+                    names.update(param.best_guess)
         marginal = [name for name in fit_info.fit_param_names
-                    if name in offsets or (name == "error_excess" and isinstance(
+                    if name in offsets or (name in excesses and isinstance(
                         fit_info.all_params[name], _UniformParam))]
+        if "error_excess" in marginal and len(excesses & set(marginal)) > 1:
+            raise ValueError("Fit either error_excess or per-range error excesses, not both")
         if not marginal:
             return fit_info
         reduced = copy.deepcopy(fit_info)
@@ -229,29 +243,59 @@ class CombinedRetriever:
     def _nuisance_ln_like(fit_info, params_dict, blocks):
         """Gaussian log likelihood with fit_info.marginal_params integrated out
         over their priors.  blocks maps each data kind to (model - data,
-        errors), computed with those offsets and error_excess at 0.
+        errors), computed with those offsets and error excesses at 0.
 
         The model is linear in each offset, so its integral is closed form.
         error_excess, s, adds in quadrature to every transit and eclipse depth
         error, sqrt(err**2 + s**2); with s uniform it is integrated over
         N_EXCESS_NODES values of s, taking the log of the integrand as linear
-        between them (_ln_cells).  The depths form one group when error_excess
-        is integrated, and the remaining data (time shifts, or everything)
-        another; given s the groups are independent, and each offset lies in
-        one.  Returns the log likelihood and, per group, (excess name or None,
+        between them (_ln_cells).  A per-range excess (kind +
+        "_error_excesses") does the same for the depths in its range only.
+        The depths sharing an integrated excess form a group, and the
+        remaining data (time shifts, or everything) one more; given the
+        excesses the groups are independent, and each offset must lie in one.
+        Returns the log likelihood and, per group, (excess name or None,
         s nodes, log integrand at the nodes, [(offset name, model - data,
         errors)] over each offset's data)."""
         marginal = fit_info.marginal_params
-        excess = "error_excess" in marginal
-        members = [[], []]  # (kind, residuals, errors) without / with the excess
+        # Each member is (kind, residuals, errors, [(offset, start, end)]) for a
+        # contiguous run of one kind's data, its offsets indexed within the run
+        members = {None: []}
         for kind, (residuals, errors) in blocks.items():
-            members[excess and kind != "time_shift"].append((kind, residuals, errors))
+            ranges = []
+            if kind != "time_shift":
+                if "error_excess" in marginal:
+                    ranges.append(("error_excess", 0, len(residuals)))
+                ranges += sorted((
+                    (name, start, end) for name, (start, end) in
+                    (params_dict.get(kind + "_error_excesses") or {}).items()
+                    if name in marginal), key=lambda r: r[1])
+            runs, position = [], 0
+            for name, start, end in ranges:
+                if start > position:
+                    runs.append((None, position, start))
+                runs.append((name, start, end))
+                position = end
+            if position < len(residuals) or not runs:
+                runs.append((None, position, len(residuals)))
+            offsets = [(offset, start, end) for offset, (start, end) in
+                       (params_dict.get(kind + "_offsets") or {}).items() if offset in marginal]
+            for name, start, end in runs:
+                inside = []
+                for offset, a, b in offsets:
+                    if start <= a and b <= end:
+                        inside.append((offset, a - start, b - start))
+                    elif a < end and b > start:
+                        raise ValueError(
+                            "Offset {} spans data with different error excesses, "
+                            "so it cannot be integrated out".format(offset))
+                members.setdefault(name, []).append(
+                    (kind, residuals[start:end], errors[start:end], inside))
 
         ln_like, groups = 0, []
-        for g, group in enumerate(members):
+        for name, group in members.items():
             if not group:
                 continue
-            name = "error_excess" if g else None
             if name is None:
                 s = np.zeros(1)
             else:
@@ -259,14 +303,14 @@ class CombinedRetriever:
                 full = np.linspace(prior.low_lim, prior.high_lim, N_EXCESS_NODES)
                 coarse = np.arange(0, N_EXCESS_NODES, EXCESS_REFINE)
                 ln_f, _ = CombinedRetriever._excess_group_terms(
-                    fit_info, params_dict, group, full, coarse, coarse=True)
+                    fit_info, group, full, coarse, coarse=True)
                 keep = np.maximum(ln_f[:-1], ln_f[1:]) >= np.max(ln_f) - EXCESS_MARGIN
                 keep = keep | np.r_[keep[1:], False] | np.r_[False, keep[:-1]]
                 index = np.unique(np.concatenate([coarse] + [
                     np.arange(c * EXCESS_REFINE, (c + 1) * EXCESS_REFINE + 1)
                     for c in np.flatnonzero(keep)]))
                 terms, group_offsets = CombinedRetriever._excess_group_terms(
-                    fit_info, params_dict, group, full, index)
+                    fit_info, group, full, index)
                 # Cell widths in units of the full grid's spacing: log(1) = 0 where refined
                 ln_like += scipy.special.logsumexp(CombinedRetriever._ln_cells(terms)
                                                    + np.log(np.diff(index))) \
@@ -277,18 +321,15 @@ class CombinedRetriever:
                 # Sequential sums, in this order, as the batched likelihood
                 # reproduces them bit for bit
                 chi2, ln_errors, counts = np.zeros(3)
-                for kind, residuals, errors in group:
+                for kind, residuals, errors, _ in group:
                     first = np.zeros(len(residuals), int)
                     chi2 += np.bincount(first, (residuals / errors)**2, 1)[0]
                     ln_errors += np.bincount(first, np.log(errors), 1)[0]
                     counts += len(residuals)
                 terms = np.full(1, -0.5 * chi2 - ln_errors - 0.5 * counts * np.log(2 * np.pi))
             group_offsets = []
-            for kind, residuals, errors in group:
-                for offset, (start, end) in \
-                        (params_dict.get(kind + "_offsets") or {}).items():
-                    if offset not in marginal:
-                        continue
+            for kind, residuals, errors, inside in group:
+                for offset, start, end in inside:
                     r, e = residuals[start:end], errors[start:end]
                     if len(r) == 0:
                         raise ValueError("Offset {} covers no data".format(offset))
@@ -309,27 +350,23 @@ class CombinedRetriever:
         return ln_like, groups
 
     @staticmethod
-    def _excess_group_terms(fit_info, params_dict, group, full, index, coarse=False):
-        """Log integrand of the error-excess group at the nodes full[index]
-        (sorted indices into the full node grid; coarse: index is every
-        EXCESS_REFINE-th node), with its integrated offsets' closed-form terms,
-        and [(offset, model - data, errors)]."""
-        marginal = fit_info.marginal_params
+    def _excess_group_terms(fit_info, group, full, index, coarse=False):
+        """Log integrand of an error-excess group (members as in
+        _nuisance_ln_like) at the nodes full[index] (sorted indices into the
+        full node grid; coarse: index is every EXCESS_REFINE-th node), with its
+        integrated offsets' closed-form terms, and [(offset, model - data,
+        errors)]."""
         terms = np.zeros(len(index))
-        rows = {}
-        for kind, residuals, errors in group:
-            entry = rows[kind] = CombinedRetriever._excess_cache(errors, full)
+        rows = []
+        for kind, residuals, errors, _ in group:
+            entry = CombinedRetriever._excess_cache(errors, full)
             inverse = entry["coarse"] if coarse else entry["inverse"][index]
-            entry = rows[kind] = dict(entry, rows=inverse)
+            rows.append(dict(entry, rows=inverse))
             terms += -0.5 * (inverse @ residuals**2) \
                 - entry["half_ln"][index] - 0.5 * len(residuals) * np.log(2 * np.pi)
         group_offsets = []
-        for kind, residuals, errors in group:
-            entry = rows[kind]
-            for offset, (start, end) in \
-                    (params_dict.get(kind + "_offsets") or {}).items():
-                if offset not in marginal:
-                    continue
+        for (kind, residuals, errors, inside), entry in zip(group, rows):
+            for offset, start, end in inside:
                 r, e = residuals[start:end], errors[start:end]
                 if len(r) == 0:
                     raise ValueError("Offset {} covers no data".format(offset))
@@ -368,7 +405,7 @@ class CombinedRetriever:
         key = (np.asarray(errors).tobytes(), full[0], full[-1], len(full))
         entry = _EXCESS_VARIANCES.get(key)
         if entry is None:
-            if len(_EXCESS_VARIANCES) >= 8:
+            if len(_EXCESS_VARIANCES) >= 16:
                 _EXCESS_VARIANCES.pop(next(iter(_EXCESS_VARIANCES)))
             variance = errors[None, :]**2 + full[:, None]**2
             inverse = np.ascontiguousarray(1 / variance)
@@ -563,7 +600,6 @@ class CombinedRetriever:
         scatt_factor = 10.0**params_dict["log_scatt_factor"]
         scatt_slope = params_dict["scatt_slope"]
         cloudtop_P = 10.0**params_dict["log_cloudtop_P"]
-        error_excess = params_dict["error_excess"]
         Rs = params_dict["Rs"]
         Mp = params_dict["Mp"]
         T_star = params_dict["T_star"]
@@ -654,7 +690,8 @@ class CombinedRetriever:
 
                 self._apply_offsets(calculated_transit_depths, params_dict, "transit")
                 residuals = calculated_transit_depths - measured_transit_depths
-                scaled_errors = np.sqrt(measured_transit_errors**2 + error_excess**2)
+                scaled_errors = np.sqrt(measured_transit_errors**2 + self._excess_squared(
+                    params_dict, "transit", len(residuals)))
                 blocks["transit"] = residuals, scaled_errors
                 ln_likelihood = np.append(ln_likelihood, -0.5 * (residuals**2 / scaled_errors**2 + np.log(2 * np.pi * scaled_errors**2)))
 
@@ -694,7 +731,8 @@ class CombinedRetriever:
                     part_size = part_size, ri=ri, P_quench=P_quench, full_output=ret_best_fit, zero_opacities=zero_opacities)
                 self._apply_offsets(calculated_eclipse_depths, params_dict, "eclipse")
                 residuals = calculated_eclipse_depths - measured_eclipse_depths
-                scaled_errors = np.sqrt(measured_eclipse_errors**2 + error_excess**2)
+                scaled_errors = np.sqrt(measured_eclipse_errors**2 + self._excess_squared(
+                    params_dict, "eclipse", len(residuals)))
                 blocks["eclipse"] = residuals, scaled_errors
                 ln_likelihood = np.append(ln_likelihood, -0.5 * (residuals**2 / scaled_errors**2 + np.log(2 * np.pi * scaled_errors**2)))
 
@@ -1411,6 +1449,7 @@ class CombinedRetriever:
                              n=None, log_k=-np.inf,
                              log_P_quench=-99,
                              transit_offsets=None, eclipse_offsets=None,
+                             transit_error_excesses=None, eclipse_error_excesses=None,
                              fit_vmr=False, fit_clr=False,
                              profile_type = 'isothermal',
                              transit_profile_type = 'isothermal',
@@ -1460,6 +1499,14 @@ class CombinedRetriever:
         eclipse_offsets : dict, optional
             Same as above, but for eclipse depths.  A name may appear in
             both transit_offsets and eclipse_offsets to share one offset.
+        transit_error_excesses, eclipse_error_excesses : dict, optional
+            Per-instrument error excesses, in the same form as the offsets,
+            e.g. {"excess_niriss": (0, 1010), "excess_nrs": (1010, 2397)}:
+            each adds in quadrature to the errors of its range, on top of
+            error_excess.  Each name becomes a parameter with a default value
+            of 0; fit one with a uniform prior and the retrievers integrate it
+            out like error_excess.  Fit either error_excess or these, not
+            both, and keep each integrated offset within one range (or none).
         time_shifts, time_shift_errors : array, optional
             Fitted mid-transit times minus a reference time, and their errors,
             in seconds, one per transit point from the same bins and light-curve
@@ -1549,7 +1596,9 @@ class CombinedRetriever:
         for kind, what, ranges in (
                 ("transit", "offsets", transit_offsets),
                 ("eclipse", "offsets", eclipse_offsets),
-                ("time_shift", "offsets", time_shift_offsets)):
+                ("time_shift", "offsets", time_shift_offsets),
+                ("transit", "error excesses", transit_error_excesses),
+                ("eclipse", "error excesses", eclipse_error_excesses)):
             if ranges is None:
                 continue
             for name, index_range in ranges.items():

@@ -161,6 +161,71 @@ class TestMarginalNuisance(unittest.TestCase):
         for name in ("log_error_inflation", "transit_error_inflations"):
             self.assertNotIn(name, self.fit_info().all_params)
 
+    def test_range_excesses(self):
+        # Two instruments with their own excesses (one with an offset), and a
+        # tail of depths with none: given the excesses, each range is its own
+        # group, so the integral is the product of the ranges' integrals
+        n, a, b = self.n, 15, 30
+        residuals = self.errors * self.noise
+        residuals[:a] = np.sqrt(self.errors[:a]**2 + 2e-4**2) * self.noise[:a]
+        residuals[a:b] = np.sqrt(self.errors[a:b]**2 + 5e-5**2) * self.noise[a:b] - 4e-4
+        shift_residuals = self.shift_errors * self.shift_noise
+        fit_info = self.fit_info(
+            transit_offsets={"off_b": (a, b)},
+            transit_error_excesses={"s_a": (0, a), "s_b": (a, b)},
+            time_shift_errors=self.shift_errors)
+        fit_info.add_uniform_fit_param("off_b", -1e-3, 1e-3)
+        fit_info.add_uniform_fit_param("s_a", 0, 5e-4)
+        fit_info.add_uniform_fit_param("s_b", 0, 3e-4)
+        reduced = CombinedRetriever._marginalize(fit_info)
+        self.assertEqual(sorted(reduced.marginal_params), ["off_b", "s_a", "s_b"])
+        blocks = {"transit": (residuals, self.errors),
+                  "time_shift": (shift_residuals, self.shift_errors)}
+        params_dict = reduced._interpret_param_array([])
+        ln_like, groups = CombinedRetriever._nuisance_ln_like(reduced, params_dict, blocks)
+        rest = -0.5 * np.sum((residuals[b:] / self.errors[b:])**2) \
+            - np.sum(np.log(np.sqrt(2 * np.pi) * self.errors[b:]))
+        shifts = grid_ln_like(shift_residuals, self.shift_errors)
+        expected = rest + shifts + \
+            grid_ln_like(residuals[:a], self.errors[:a], (0, 5e-4), n=20001) + \
+            grid_ln_like(residuals[a:b], self.errors[a:b], (0, 3e-4), ("uniform", -1e-3, 1e-3), n=4001)
+        self.assertAlmostEqual(ln_like, expected, delta=2e-3)
+        self.assertEqual([g[0] for g in groups], [None, "s_a", "s_b"])
+        np.random.seed(2)
+        draws = CombinedRetriever._draw_nuisance(reduced, groups, 4000)
+        self.assertTrue(np.all((draws["s_a"] > 0) & (draws["s_a"] < 5e-4)))
+        self.assertTrue(np.all((draws["s_b"] > 0) & (draws["s_b"] < 3e-4)))
+        # s_a (its range has no offset) follows its brute-force conditional
+        s = np.linspace(0, 5e-4, 20001)
+        sigma = np.sqrt(self.errors[None, :a]**2 + s[:, None]**2)
+        ln_p = np.sum(-0.5 * (residuals[:a] / sigma)**2 - np.log(sigma), axis=1)
+        cdf = np.cumsum(np.exp(ln_p - ln_p.max()))
+        self.assertAlmostEqual(np.median(draws["s_a"]), s[np.searchsorted(cdf / cdf[-1], 0.5)],
+                               delta=0.03 * 5e-4)
+        self.assertAlmostEqual(np.median(draws["off_b"]), 4e-4, delta=6e-5)
+
+        # A sampled range excess adds in quadrature over its range only
+        sampled = self.fit_info(transit_error_excesses={"s_a": (0, a)})
+        sampled.add_gaussian_fit_param("s_a", 1e-4)
+        params = sampled._interpret_param_array([1e-4])
+        squared = CombinedRetriever._excess_squared(params, "transit", n)
+        np.testing.assert_array_equal(squared, np.r_[np.full(a, 1e-8), np.zeros(n - a)])
+
+        # An offset spanning two excesses, or both kinds of excess, cannot be integrated
+        straddle = self.fit_info(transit_offsets={"off": (10, 20)},
+                                 transit_error_excesses={"s_a": (0, a), "s_b": (a, b)})
+        for name, limits in (("off", (-1e-3, 1e-3)), ("s_a", (0, 5e-4)), ("s_b", (0, 3e-4))):
+            straddle.add_uniform_fit_param(name, *limits)
+        reduced = CombinedRetriever._marginalize(straddle)
+        with self.assertRaisesRegex(ValueError, "spans data with different error excesses"):
+            CombinedRetriever._nuisance_ln_like(
+                reduced, reduced._interpret_param_array([]), {"transit": (residuals, self.errors)})
+        both = self.fit_info(transit_error_excesses={"s_a": (0, a)})
+        both.add_uniform_fit_param("s_a", 0, 5e-4)
+        both.add_uniform_fit_param("error_excess", 0, 5e-4)
+        with self.assertRaisesRegex(ValueError, "not both"):
+            CombinedRetriever._marginalize(both)
+
     def test_ln_like_end_to_end(self):
         min_wavelength, max_wavelength, depths, errors = np.loadtxt(
             "tests/testing_data/hd209458b_transit_depths", unpack=True)

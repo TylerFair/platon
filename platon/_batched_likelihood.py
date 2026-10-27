@@ -152,6 +152,9 @@ class BatchedLikelihood:
         unsupported = names - supported
         if unsupported:
             raise ValueError("Unsupported batched parameters: {}".format(sorted(unsupported)))
+        if any(p[name] != 0 for name in (p.get("transit_error_excesses") or {})
+               if name not in getattr(fit_info, "marginal_params", ())):
+            raise ValueError("Batched likelihood supports integrated per-range error excesses only")
         self.pressures = _default_pressures()
         if self.one_d:
             # The scalar path's own 1-D profile and clouds
