@@ -253,8 +253,9 @@ class CombinedRetriever:
             else:
                 terms = np.zeros(len(s))
                 for kind, residuals, errors in group:
-                    variance, half_ln = CombinedRetriever._excess_variance(errors, s)
-                    terms += -0.5 * np.sum(residuals[None, :]**2 / variance, axis=1) \
+                    inverse, half_ln = CombinedRetriever._excess_variance(errors, s)
+                    # (nodes x data) @ data: one matrix-vector product per call
+                    terms += -0.5 * (inverse @ residuals**2) \
                         - half_ln - 0.5 * len(residuals) * np.log(2 * np.pi)
             group_offsets = []
             for kind, residuals, errors in group:
@@ -265,7 +266,12 @@ class CombinedRetriever:
                     r, e = residuals[start:end], errors[start:end]
                     if len(r) == 0:
                         raise ValueError("Offset {} covers no data".format(offset))
-                    W, R = CombinedRetriever._offset_sums(r, e, s)
+                    if name is None:
+                        W, R = CombinedRetriever._offset_sums(r, e, s)
+                    else:
+                        # The cached 1/(err**2 + s**2) of this offset's data
+                        weights = CombinedRetriever._excess_variance(errors, s)[0][:, start:end]
+                        W, R = CombinedRetriever._excess_weight_sum(errors, s, start, end), -(weights @ r)
                     prior = fit_info.all_params[offset]
                     mean, std = R / W, 1 / np.sqrt(W)
                     terms = terms + 0.5 * R * mean + np.log(np.sqrt(2 * np.pi) * std)
@@ -287,15 +293,28 @@ class CombinedRetriever:
 
     @staticmethod
     def _excess_variance(errors, s):
-        """(errors**2 + s**2 at each node s, half the sum of its log over the
-        data), computed once per error array and node grid."""
+        """(1/(errors**2 + s**2) at each node s, as a C-contiguous (nodes x
+        data) array, and half the sum of log(errors**2 + s**2) over the data),
+        computed once per error array and node grid."""
         key = (np.asarray(errors).tobytes(), len(errors), s[0], s[-1], len(s))
         if key not in _EXCESS_VARIANCES:
             if len(_EXCESS_VARIANCES) >= 8:
                 _EXCESS_VARIANCES.pop(next(iter(_EXCESS_VARIANCES)))
             variance = errors[None, :]**2 + s[:, None]**2
-            _EXCESS_VARIANCES[key] = variance, 0.5 * np.sum(np.log(variance), axis=1)
-        return _EXCESS_VARIANCES[key]
+            _EXCESS_VARIANCES[key] = (np.ascontiguousarray(1 / variance),
+                                      0.5 * np.sum(np.log(variance), axis=1), {})
+        return _EXCESS_VARIANCES[key][:2]
+
+    @staticmethod
+    def _excess_weight_sum(errors, s, start, end):
+        """sum of 1/(errors**2 + s**2) over errors[start:end] at each node s,
+        which depends only on the data errors: cached with _excess_variance."""
+        CombinedRetriever._excess_variance(errors, s)
+        key = (np.asarray(errors).tobytes(), len(errors), s[0], s[-1], len(s))
+        inverse, _, sums = _EXCESS_VARIANCES[key]
+        if (start, end) not in sums:
+            sums[start, end] = inverse[:, start:end].sum(axis=1)
+        return sums[start, end]
 
     @staticmethod
     def _offset_sums(residuals, errors, s):
