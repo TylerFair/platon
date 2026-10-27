@@ -368,9 +368,10 @@ class CombinedRetriever:
                          eclipse_errors, zero_opacities=(), batch_size=256):
         """The batched likelihood for (batch, n_parameters) rows, or None.
 
-        Where the model supports it (two-sector Guillot transit retrievals),
-        it returns exactly what _ln_like returns for each row, evaluating many
-        rows per device call; otherwise samplers use _ln_like.
+        Where the model supports it (two-sector Guillot, isothermal or
+        Madhusudhan & Seager parametric transit retrievals), it returns exactly
+        what _ln_like returns for each row, evaluating many rows per device
+        call; otherwise samplers use _ln_like.
         """
         from ._batched_likelihood import BatchedLikelihood
         try:

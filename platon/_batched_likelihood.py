@@ -1,4 +1,5 @@
-"""Vectorized host preparation for two-sector Guillot transit likelihoods.
+"""Vectorized host preparation for two-sector transit likelihoods (Guillot,
+isothermal or Madhusudhan & Seager parametric sectors).
 
 CombinedRetriever's samplers use this batch wherever it applies; it returns
 the scalar likelihood's values exactly.  It deliberately checks its
@@ -19,13 +20,16 @@ from scipy.stats import norm
 from . import _forward_model as fm
 from ._batched_forward_model import make_forward
 from ._forward_prep import prepare_forward_inputs
-from .TP_profile import _default_pressures
+from .TP_profile import Profile, _default_pressures
 from .constants import G
 from ._params import _GaussianParam
 from .terminator import TwoSectorTerminator, limb_time_shifts
 from .transit_depth_calculator import DEEP_CLAMP_PRESSURE
 
 SECTORS = ("sector1.", "sector2.")
+# Per-sector profile parameters of each supported two-sector profile type
+PROFILE_PARAMS = {"guillot": ("beta", "log_gamma"), "isothermal": ("T",),
+                  "parametric": ("T0", "log_P1", "alpha1", "alpha2", "log_P3", "T3")}
 # Rejection reasons: the scalar path's AtmosphereError messages where it raises
 INVALID_PROFILE = "Invalid T/P profile"
 INVALID_TEMPERATURES = "Invalid temperatures in T/P profile"
@@ -50,7 +54,7 @@ class BatchedLikelihood:
                  transit_depths, transit_errors, eclipse_depths, eclipse_errors,
                  zero_opacities=(), batch_size=64):
         if transit_calc is None or eclipse_calc is not None or eclipse_depths is not None:
-            raise ValueError("Batched likelihood requires transit-only two-sector Guillot profiles")
+            raise ValueError("Batched likelihood requires transit-only two-sector profiles")
         self.retriever = retriever
         self.calc = transit_calc
         self.fit = fit_info
@@ -67,8 +71,10 @@ class BatchedLikelihood:
                                 for kind in ("transit", "time_shift")])
         self.vectorized_finish = set(getattr(fit_info, "marginal_params", ())) <= offsets
         terminator = p.get("transit_terminator")
-        if not isinstance(terminator, TwoSectorTerminator) or terminator.profile_type != "guillot":
-            raise ValueError("Batched likelihood requires transit-only two-sector Guillot profiles")
+        if not isinstance(terminator, TwoSectorTerminator) or \
+           terminator.profile_type not in PROFILE_PARAMS:
+            raise ValueError("Batched likelihood requires transit-only two-sector profiles")
+        self.profile_type = terminator.profile_type
         # Free VMRs replace equilibrium chemistry entirely; the last gas is the filler
         self.free_vmr = bool(p["fit_vmr"]) and p["logZ"] is None and p["CO_ratio"] is None
         if p["fit_clr"] or (p["fit_vmr"] and not self.free_vmr) or \
@@ -91,14 +97,16 @@ class BatchedLikelihood:
             raise ValueError("Batched likelihood supports one heterogeneity without "
                              "per-visit values")
         supported = {"Rp", "Mp", "T_star", "T_het", "het_cov_frac", "log_P_quench",
-                     "log_k_th", "T_int", "error_excess", "sector1.fraction"}
+                     "error_excess", "sector1.fraction"}
+        if self.profile_type == "guillot":
+            supported.update(("log_k_th", "T_int"))
         if self.free_vmr:
             supported.update("log_" + gas for gas in self.gases[:-1])
         else:
             supported.update(("logZ", "CO_ratio"))
         for sector in SECTORS:
-            supported.update(sector + n for n in ("beta", "log_gamma", "log_scatt_factor",
-                             "scatt_slope", "log_cloudtop_P", "cloud_fraction"))
+            supported.update(sector + n for n in PROFILE_PARAMS[self.profile_type] + (
+                "log_scatt_factor", "scatt_slope", "log_cloudtop_P", "cloud_fraction"))
         for kind in ("transit", "time_shift"):
             supported.update((p.get(kind + "_offsets") or {}).keys())
         unsupported = names - supported
@@ -149,6 +157,29 @@ class BatchedLikelihood:
         return values
 
     def _temperatures(self, values, size):
+        """Unclamped sector temperatures (size, 2, layers), exactly as the
+        scalar profiles compute them."""
+        if self.profile_type == "isothermal":
+            # Profile.isothermal: np.ones(layers) * T
+            T = np.stack([np.broadcast_to(np.asarray(values[s + "T"], dtype=float), (size,))
+                          for s in SECTORS], axis=1)
+            return np.ones(len(self.pressures)) * T[..., None]
+        if self.profile_type == "parametric":
+            # Profile.parametric mixes scalar and array maths; call it per row
+            # so that every operation is the scalar path's own
+            names = PROFILE_PARAMS["parametric"]
+            temperatures = np.empty((size, 2, len(self.pressures)))
+            with np.errstate(all="ignore"):
+                for i in range(size):
+                    for k, s in enumerate(SECTORS):
+                        params = {n: values[s + n][i] if np.ndim(values[s + n]) else values[s + n]
+                                  for n in names}
+                        temperatures[i, k] = Profile.from_params_dict(
+                            "parametric", params).temperatures
+            return temperatures
+        return self._guillot_temperatures(values, size)
+
+    def _guillot_temperatures(self, values, size):
         """Unclamped Guillot temperatures (size, 2, layers), as Profile.guillot
         computes them: its scalar powers use C pow, its array ones the ufunc."""
         def column(name):

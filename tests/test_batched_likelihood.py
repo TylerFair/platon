@@ -45,6 +45,7 @@ class TestBatchedLikelihood(unittest.TestCase):
         evaluator.template = np.zeros(fm.SC_N_SCALARS + fm.IX_N_INTS +
                                       3 * len(evaluator.pressures) - 1 + 10, np.float32)
         evaluator.free_vmr, evaluator.gases, evaluator.dual = False, None, True
+        evaluator.profile_type = "guillot"
         evaluator.cfg = SimpleNamespace(stellar_in_grid=True, has_het=False, sort_layers=True)
         evaluator.stellar_temps = np.array([2300., 12000.])
         evaluator.cloudtop_range = (1e-4, 1e8)
@@ -175,6 +176,61 @@ class TestBatchedLikelihood(unittest.TestCase):
         isothermal.add_uniform_fit_param("T", 800, 1800)
         self.assertIsNone(retriever._batched_ln_like(calc, None, isothermal, depths, errors,
                                                      None, None))
+
+    def test_matches_scalar_isothermal_and_parametric(self):
+        """Two-sector isothermal and Madhusudhan-Seager sectors: batched rows
+        equal _ln_like exactly, with the same rejections."""
+        low, high, depths, errors = np.loadtxt(
+            "tests/testing_data/hd209458b_transit_depths", unpack=True)
+        bins = np.array([low, high]).T
+        n = len(depths)
+        calc = TransitDepthCalculator()
+        calc.change_wavelength_bins(bins)
+        retriever = CombinedRetriever()
+        rng = np.random.default_rng(1941)
+        Rs, a = 1.19 * R_sun, 7e9
+        profiles = {
+            "isothermal": ([Profile.isothermal(T) for T in (1000, 1300)],
+                           {"T": (700, 1800)}),
+            "parametric": ([Profile.parametric(T0, 1e2, .5, .5, 1e6, 1700) for T0 in (900, 1100)],
+                           {"T0": (800, 1300), "log_P1": (0, 3), "alpha1": (.3, .8),
+                            "alpha2": (.3, .8), "log_P3": (5, 7), "T3": (1200, 2200)})}
+        for kind, (sector_profiles, profile_priors) in profiles.items():
+            for patchy in (True, False):
+                sectors = [TerminatorSector(profile, cloudtop_pressure=1e5,
+                                            cloud_fraction=.5 if patchy else 1)
+                           for profile in sector_profiles]
+                full = CombinedRetriever.get_default_fit_info(
+                    Rs=Rs, Mp=0.73 * M_jup, Rp=1.4 * R_jup, logZ=1, CO_ratio=.5,
+                    transit_terminator=TwoSectorTerminator(*sectors), a=a, b=.3,
+                    period=3.5 * 86400, time_shifts=rng.normal(0, 10, n),
+                    time_shift_errors=np.full(n, 10.), time_shift_offsets={"t0": (0, n)},
+                    transit_offsets={"offset": (n // 2, n)})
+                priors = dict(profile_priors, log_cloudtop_P=(2, 6), log_scatt_factor=(0, 2),
+                              scatt_slope=(2, 6))
+                if patchy:
+                    priors["cloud_fraction"] = (0, 1)
+                for sector in ("sector1.", "sector2."):
+                    for name, bounds in priors.items():
+                        full.add_uniform_fit_param(sector + name, *bounds)
+                for name, bounds in (("Rp", (1.3 * R_jup, 1.5 * R_jup)), ("logZ", (-1, 2)),
+                                     ("CO_ratio", (.2, 1)), ("offset", (-1e-3, 1e-3)),
+                                     ("t0", (-50, 50)), ("error_excess", (0, 1e-4))):
+                    full.add_uniform_fit_param(name, *bounds)
+                fit = CombinedRetriever._marginalize(full)
+                batch = retriever._batched_ln_like(calc, None, fit, depths, errors, None, None,
+                                                   batch_size=16)
+                self.assertIsNotNone(batch, kind)
+                self.assertEqual(batch.dual, patchy)
+                rows = np.array([fit._from_unit_interval_array(u) for u in
+                                 rng.uniform(.02, .98, (24, len(fit.fit_param_names)))])
+                expected = np.array([retriever._ln_like(row, calc, None, fit, depths, errors,
+                                                        None, None) for row in rows])
+                actual = batch(rows)
+                self.assertGreater(np.isfinite(expected).sum(), 8, kind)
+                np.testing.assert_array_equal(actual, expected, err_msg=kind)
+                # and the batch, not its scalar fallback, evaluated them
+                self.assertGreater(np.sum(batch.last_reasons == ""), 8, kind)
 
     def test_all_rejected_and_empty_batch(self):
         evaluator = object.__new__(BatchedLikelihood)
