@@ -26,8 +26,15 @@ from .terminator import TwoSectorTerminator, label_by_temperature, limb_time_shi
 from .retrieval_result import RetrievalResult
 from .custom_dynesty_result import CustomDynestyResult
 
-# Nodes spanning the prior range of an integrated-out error_excess
+# Nodes spanning the prior range of an integrated-out error_excess.  The
+# integrand is first evaluated at every EXCESS_REFINE-th node; only the cells
+# of that coarse grid within EXCESS_MARGIN nats of its maximum (and their
+# neighbours) are filled in to the full grid, since the rest of the integral
+# is below exp(-EXCESS_MARGIN) of it.
 N_EXCESS_NODES = 2049
+EXCESS_REFINE = 32
+EXCESS_MARGIN = 40.0
+assert (N_EXCESS_NODES - 1) % EXCESS_REFINE == 0
 # err**2 + s**2 at those nodes and half the sum of its log, which depend only
 # on the data errors and the prior: kept for a few error arrays
 _EXCESS_VARIANCES = {}
@@ -238,7 +245,23 @@ class CombinedRetriever:
                 s = np.zeros(1)
             else:
                 prior = fit_info.all_params[name]
-                s = np.linspace(prior.low_lim, prior.high_lim, N_EXCESS_NODES)
+                full = np.linspace(prior.low_lim, prior.high_lim, N_EXCESS_NODES)
+                coarse = np.arange(0, N_EXCESS_NODES, EXCESS_REFINE)
+                ln_f, _ = CombinedRetriever._excess_group_terms(
+                    fit_info, params_dict, group, full, coarse, coarse=True)
+                keep = np.maximum(ln_f[:-1], ln_f[1:]) >= np.max(ln_f) - EXCESS_MARGIN
+                keep = keep | np.r_[keep[1:], False] | np.r_[False, keep[:-1]]
+                index = np.unique(np.concatenate([coarse] + [
+                    np.arange(c * EXCESS_REFINE, (c + 1) * EXCESS_REFINE + 1)
+                    for c in np.flatnonzero(keep)]))
+                terms, group_offsets = CombinedRetriever._excess_group_terms(
+                    fit_info, params_dict, group, full, index)
+                # Cell widths in units of the full grid's spacing: log(1) = 0 where refined
+                ln_like += scipy.special.logsumexp(CombinedRetriever._ln_cells(terms)
+                                                   + np.log(np.diff(index))) \
+                    - np.log(N_EXCESS_NODES - 1)
+                groups.append((name, full[index], terms, group_offsets))
+                continue
             if name is None:
                 # Sequential sums, in this order, as the batched likelihood
                 # reproduces them bit for bit
@@ -249,13 +272,6 @@ class CombinedRetriever:
                     ln_errors += np.bincount(first, np.log(errors), 1)[0]
                     counts += len(residuals)
                 terms = np.full(1, -0.5 * chi2 - ln_errors - 0.5 * counts * np.log(2 * np.pi))
-            else:
-                terms = np.zeros(len(s))
-                for kind, residuals, errors in group:
-                    inverse, half_ln = CombinedRetriever._excess_variance(errors, s)
-                    # (nodes x data) @ data: one matrix-vector product per call
-                    terms += -0.5 * (inverse @ residuals**2) \
-                        - half_ln - 0.5 * len(residuals) * np.log(2 * np.pi)
             group_offsets = []
             for kind, residuals, errors in group:
                 for offset, (start, end) in \
@@ -265,12 +281,7 @@ class CombinedRetriever:
                     r, e = residuals[start:end], errors[start:end]
                     if len(r) == 0:
                         raise ValueError("Offset {} covers no data".format(offset))
-                    if name is None:
-                        W, R = CombinedRetriever._offset_sums(r, e, s)
-                    else:
-                        # The cached 1/(err**2 + s**2) of this offset's data
-                        weights = CombinedRetriever._excess_variance(errors, s)[0][:, start:end]
-                        W, R = CombinedRetriever._excess_weight_sum(errors, s, start, end), -(weights @ r)
+                    W, R = CombinedRetriever._offset_sums(r, e, s)
                     prior = fit_info.all_params[offset]
                     mean, std = R / W, 1 / np.sqrt(W)
                     terms = terms + 0.5 * R * mean + np.log(np.sqrt(2 * np.pi) * std)
@@ -282,54 +293,39 @@ class CombinedRetriever:
                             (prior.high_lim - mean) / std, (prior.low_lim - mean) / std) \
                             - np.log(prior.high_lim - prior.low_lim)
                     group_offsets.append((offset, r, e))
-            if name is None:
-                ln_like += terms[0]
-            else:  # the cells' widths times the uniform prior density
-                ln_like += scipy.special.logsumexp(CombinedRetriever._ln_cells(
-                    terms)) - np.log(N_EXCESS_NODES - 1)
+            ln_like += terms[0]
             groups.append((name, s, terms, group_offsets))
         return ln_like, groups
 
     @staticmethod
-    def _nuisance_ln_like_rows(fit_info, params_dicts, blocks_rows):
-        """_nuisance_ln_like's log likelihood for many rows of one fit, equal
-        bit for bit but much faster.  The rows share the data errors, so the
-        error-excess group's elementwise terms, its offsets' closed-form terms
-        and its sum over the nodes run on (rows x nodes) arrays; the
-        matrix-vector products, and the group without the excess, are still
-        computed one row at a time exactly as in _nuisance_ln_like."""
+    def _excess_group_terms(fit_info, params_dict, group, full, index, coarse=False):
+        """Log integrand of the error-excess group at the nodes full[index]
+        (sorted indices into the full node grid; coarse: index is every
+        EXCESS_REFINE-th node), with its integrated offsets' closed-form terms,
+        and [(offset, model - data, errors)]."""
         marginal = fit_info.marginal_params
-        if "error_excess" not in marginal:
-            return np.array([CombinedRetriever._nuisance_ln_like(fit_info, p, b)[0]
-                             for p, b in zip(params_dicts, blocks_rows)])
-        ln_like = np.zeros(len(blocks_rows))
-        if "time_shift" in blocks_rows[0]:
-            ln_like = ln_like + np.array([CombinedRetriever._nuisance_ln_like(
-                fit_info, p, {"time_shift": b["time_shift"]})[0]
-                for p, b in zip(params_dicts, blocks_rows)])
-        kinds = [kind for kind in blocks_rows[0] if kind != "time_shift"]
-        if not kinds:
-            return ln_like
-        prior = fit_info.all_params["error_excess"]
-        s = np.linspace(prior.low_lim, prior.high_lim, N_EXCESS_NODES)
-        terms = np.zeros((len(blocks_rows), len(s)))
-        for kind in kinds:
-            errors = blocks_rows[0][kind][1]
-            assert all(np.array_equal(b[kind][1], errors) for b in blocks_rows[1:])
-            inverse, half_ln = CombinedRetriever._excess_variance(errors, s)
-            products = np.stack([inverse @ b[kind][0]**2 for b in blocks_rows])
-            terms += -0.5 * products - half_ln - 0.5 * len(errors) * np.log(2 * np.pi)
-        for kind in kinds:
-            errors = blocks_rows[0][kind][1]
+        terms = np.zeros(len(index))
+        rows = {}
+        for kind, residuals, errors in group:
+            entry = rows[kind] = CombinedRetriever._excess_cache(errors, full)
+            inverse = entry["coarse"] if coarse else entry["inverse"][index]
+            entry = rows[kind] = dict(entry, rows=inverse)
+            terms += -0.5 * (inverse @ residuals**2) \
+                - entry["half_ln"][index] - 0.5 * len(residuals) * np.log(2 * np.pi)
+        group_offsets = []
+        for kind, residuals, errors in group:
+            entry = rows[kind]
             for offset, (start, end) in \
-                    (params_dicts[0].get(kind + "_offsets") or {}).items():
+                    (params_dict.get(kind + "_offsets") or {}).items():
                 if offset not in marginal:
                     continue
-                if end <= start:
+                r, e = residuals[start:end], errors[start:end]
+                if len(r) == 0:
                     raise ValueError("Offset {} covers no data".format(offset))
-                weights = CombinedRetriever._excess_variance(errors, s)[0][:, start:end]
-                W = CombinedRetriever._excess_weight_sum(errors, s, start, end)
-                R = np.stack([-(weights @ b[kind][0][start:end]) for b in blocks_rows])
+                if (start, end) not in entry["sums"]:
+                    entry["sums"][start, end] = entry["inverse"][:, start:end].sum(axis=1)
+                W = entry["sums"][start, end][index]
+                R = -(entry["rows"][:, start:end] @ r)
                 prior = fit_info.all_params[offset]
                 mean, std = R / W, 1 / np.sqrt(W)
                 terms = terms + 0.5 * R * mean + np.log(np.sqrt(2 * np.pi) * std)
@@ -340,33 +336,35 @@ class CombinedRetriever:
                     terms += CombinedRetriever._log_ndtr_diff(
                         (prior.high_lim - mean) / std, (prior.low_lim - mean) / std) \
                         - np.log(prior.high_lim - prior.low_lim)
-        return ln_like + (scipy.special.logsumexp(CombinedRetriever._ln_cells(terms), axis=-1)
-                          - np.log(N_EXCESS_NODES - 1))
+                group_offsets.append((offset, r, e))
+        return terms, group_offsets
 
     @staticmethod
-    def _excess_variance(errors, s):
-        """(1/(errors**2 + s**2) at each node s, as a C-contiguous (nodes x
-        data) array, and half the sum of log(errors**2 + s**2) over the data),
-        computed once per error array and node grid."""
-        key = (np.asarray(errors).tobytes(), len(errors), s[0], s[-1], len(s))
-        if key not in _EXCESS_VARIANCES:
+    def _nuisance_ln_like_rows(fit_info, params_dicts, blocks_rows):
+        """_nuisance_ln_like's log likelihood for each of many rows of one fit.
+        Each row refines its own error-excess nodes, so rows are integrated one
+        at a time, exactly as _nuisance_ln_like integrates them."""
+        return np.array([CombinedRetriever._nuisance_ln_like(fit_info, p, b)[0]
+                         for p, b in zip(params_dicts, blocks_rows)])
+
+    @staticmethod
+    def _excess_cache(errors, full):
+        """What the error-excess integrand needs at the full node grid, which
+        depends only on the data errors and the prior, computed once per error
+        array: 1/(errors**2 + s**2) as a C-contiguous (nodes x data) array and
+        its coarse rows, half the sum of log(errors**2 + s**2) over the data,
+        and each offset's per-node weight sum (filled in on first use)."""
+        key = (np.asarray(errors).tobytes(), full[0], full[-1], len(full))
+        entry = _EXCESS_VARIANCES.get(key)
+        if entry is None:
             if len(_EXCESS_VARIANCES) >= 8:
                 _EXCESS_VARIANCES.pop(next(iter(_EXCESS_VARIANCES)))
-            variance = errors[None, :]**2 + s[:, None]**2
-            _EXCESS_VARIANCES[key] = (np.ascontiguousarray(1 / variance),
-                                      0.5 * np.sum(np.log(variance), axis=1), {})
-        return _EXCESS_VARIANCES[key][:2]
-
-    @staticmethod
-    def _excess_weight_sum(errors, s, start, end):
-        """sum of 1/(errors**2 + s**2) over errors[start:end] at each node s,
-        which depends only on the data errors: cached with _excess_variance."""
-        CombinedRetriever._excess_variance(errors, s)
-        key = (np.asarray(errors).tobytes(), len(errors), s[0], s[-1], len(s))
-        inverse, _, sums = _EXCESS_VARIANCES[key]
-        if (start, end) not in sums:
-            sums[start, end] = inverse[:, start:end].sum(axis=1)
-        return sums[start, end]
+            variance = errors[None, :]**2 + full[:, None]**2
+            inverse = np.ascontiguousarray(1 / variance)
+            entry = _EXCESS_VARIANCES[key] = dict(
+                inverse=inverse, coarse=np.ascontiguousarray(inverse[::EXCESS_REFINE]),
+                half_ln=0.5 * np.sum(np.log(variance), axis=1), sums={})
+        return entry
 
     @staticmethod
     def _offset_sums(residuals, errors, s):
@@ -404,7 +402,8 @@ class CombinedRetriever:
                 excess = np.full(size, x[np.argmax(ln_f)])
             else:
                 # a cell, then a point in it from the log-linear density
-                ln_cells = CombinedRetriever._ln_cells(ln_f)
+                # cells of the (partly refined) node grid, weighted by their widths
+                ln_cells = CombinedRetriever._ln_cells(ln_f) + np.log(np.diff(x))
                 p = np.exp(ln_cells - ln_cells.max())
                 cell = np.random.choice(len(p), size, p=p / p.sum())
                 slope, u = np.diff(ln_f)[cell], np.random.random(size)
@@ -412,7 +411,7 @@ class CombinedRetriever:
                     t = np.where(np.abs(slope) < 1e-8, u, np.where(
                         slope > 0, 1 + np.log(u + (1 - u) * np.exp(-slope)) / slope,
                         np.log1p(u * np.expm1(slope)) / slope))
-                excess = x[cell] + t * (x[1] - x[0])
+                excess = x[cell] + t * (x[cell + 1] - x[cell])
             if name is not None:  # inside the open prior interval
                 excess = values[name] = np.clip(
                     excess, np.nextafter(x[0], x[-1]), np.nextafter(x[-1], x[0]))
