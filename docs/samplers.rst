@@ -164,9 +164,9 @@ The defaults are 5,000 live points and RealNVP flows (6 blocks of width 64,
 LU linear layers, a fresh flow every 8 levels, up to 300 epochs) whose base
 distribution has a 10% independent Student-t component.  The final
 importance sample has 1 to 3 million draws, sized from 8,192 planning draws
-for an effective sample size of ``target_ess=5000``.  Two-sector transit
-retrievals (Guillot, isothermal or parametric sectors) evaluate likelihoods in
-batches on the GPU, and on a GPU
+for an effective sample size of ``target_ess=5000``.  Transit retrievals with
+Guillot, isothermal or parametric profiles, two-sector or 1-D (including a
+patchy cloud_fraction), evaluate likelihoods in batches on the GPU, and on a GPU
 the flow densities are also evaluated there; neither changes the result.
 Extra keyword arguments override nessai's options.
 

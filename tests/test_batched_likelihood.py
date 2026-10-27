@@ -171,10 +171,12 @@ class TestBatchedLikelihood(unittest.TestCase):
             self.assertGreater(np.isfinite(expected).sum(), 8)
             np.testing.assert_array_equal(actual, expected)
 
-        isothermal = CombinedRetriever.get_default_fit_info(Rs=Rs, Mp=0.73 * M_jup,
-                                                            Rp=1.4 * R_jup, T=1200)
-        isothermal.add_uniform_fit_param("T", 800, 1800)
-        self.assertIsNone(retriever._batched_ln_like(calc, None, isothermal, depths, errors,
+        # Mie scattering stays on the scalar likelihood
+        mie = CombinedRetriever.get_default_fit_info(Rs=Rs, Mp=0.73 * M_jup, Rp=1.4 * R_jup,
+                                                     T=1200, n=1.7, log_k=-1,
+                                                     log_number_density=8, log_scatt_factor=0)
+        mie.add_uniform_fit_param("T", 800, 1800)
+        self.assertIsNone(retriever._batched_ln_like(calc, None, mie, depths, errors,
                                                      None, None))
 
     def test_matches_scalar_isothermal_and_parametric(self):
@@ -231,6 +233,67 @@ class TestBatchedLikelihood(unittest.TestCase):
                 np.testing.assert_array_equal(actual, expected, err_msg=kind)
                 # and the batch, not its scalar fallback, evaluated them
                 self.assertGreater(np.sum(batch.last_reasons == ""), 8, kind)
+
+    def test_matches_scalar_one_dimensional(self):
+        """1-D (single-terminator) isothermal, Guillot and parametric profiles,
+        with and without a patchy cloud_fraction, equilibrium chemistry or free
+        VMRs, an offset and an integrated error_excess: batched rows equal
+        _ln_like exactly, with the same rejections."""
+        low, high, depths, errors = np.loadtxt(
+            "tests/testing_data/hd209458b_transit_depths", unpack=True)
+        bins = np.array([low, high]).T
+        n = len(depths)
+        calc = TransitDepthCalculator()
+        calc.change_wavelength_bins(bins)
+        retriever = CombinedRetriever()
+        rng = np.random.default_rng(1961)
+        Rs = 1.19 * R_sun
+        profiles = {
+            "isothermal": (dict(T=1200), {"T": (800, 1800)}),
+            "guillot": (dict(transit_profile_type="guillot", T_star=6000, a=7e9, beta=.8,
+                             log_k_th=-2, log_gamma=-1, T_int=100),
+                        {"beta": (.6, 1.), "log_gamma": (-1.5, 0), "log_k_th": (-2.5, -1),
+                         "T_int": (50, 300)}),
+            "parametric": (dict(transit_profile_type="parametric", T0=1000, log_P1=2,
+                                alpha1=.5, alpha2=.5, log_P3=6, T3=1700),
+                           {"T0": (800, 1300), "log_P1": (0, 3), "alpha1": (.3, .8),
+                            "alpha2": (.3, .8), "log_P3": (5, 7), "T3": (1200, 2200)})}
+        for kind, (profile_kwargs, profile_priors) in profiles.items():
+            for patchy in (True, False):
+                for free in (False, True):
+                    chemistry = dict(logZ=None, CO_ratio=None, fit_vmr=True) if free else \
+                        dict(logZ=1, CO_ratio=.5)
+                    full = CombinedRetriever.get_default_fit_info(
+                        Rs=Rs, Mp=0.73 * M_jup, Rp=1.4 * R_jup, log_cloudtop_P=5,
+                        cloud_fraction=.5 if patchy else 1,
+                        transit_offsets={"offset": (n // 2, n)}, **chemistry, **profile_kwargs)
+                    priors = dict(profile_priors, log_cloudtop_P=(2, 6), log_scatt_factor=(0, 2),
+                                  scatt_slope=(2, 6), Rp=(1.3 * R_jup, 1.5 * R_jup),
+                                  offset=(-1e-3, 1e-3), error_excess=(0, 1e-4))
+                    if patchy:
+                        priors["cloud_fraction"] = (0, 1)
+                    if free:
+                        full.add_gases_vmr(["H2O", "CO2", "CO", "H2-He"], 1e-8, 1e-2)
+                    else:
+                        priors.update(logZ=(-1, 2), CO_ratio=(.2, 1))
+                    for name, bounds in priors.items():
+                        full.add_uniform_fit_param(name, *bounds)
+                    fit = CombinedRetriever._marginalize(full)
+                    label = f"{kind}, patchy={patchy}, free={free}"
+                    batch = retriever._batched_ln_like(calc, None, fit, depths, errors, None,
+                                                       None, batch_size=16)
+                    self.assertIsNotNone(batch, label)
+                    self.assertTrue(batch.one_d, label)
+                    self.assertEqual(batch.dual, patchy, label)
+                    rows = np.array([fit._from_unit_interval_array(u) for u in
+                                     rng.uniform(.02, .98, (24, len(fit.fit_param_names)))])
+                    expected = np.array([retriever._ln_like(row, calc, None, fit, depths,
+                                                            errors, None, None) for row in rows])
+                    actual = batch(rows)
+                    self.assertGreater(np.isfinite(expected).sum(), 8, label)
+                    np.testing.assert_array_equal(actual, expected, err_msg=label)
+                    self.assertGreater(np.sum(batch.last_reasons == ""), 8, label)
+                    self.assertEqual(batch.last_depths.shape, (24, 1, n), label)
 
     def test_all_rejected_and_empty_batch(self):
         evaluator = object.__new__(BatchedLikelihood)
