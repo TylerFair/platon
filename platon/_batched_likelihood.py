@@ -152,7 +152,7 @@ class BatchedLikelihood:
         unsupported = names - supported
         if unsupported:
             raise ValueError("Unsupported batched parameters: {}".format(sorted(unsupported)))
-        for key in ("transit_error_excesses", "time_shift_slopes"):
+        for key in ("transit_error_excesses", "time_shift_slopes", "time_shift_error_excesses"):
             if any(p[name] != 0 for name in (p.get(key) or {})
                    if name not in getattr(fit_info, "marginal_params", ())):
                 raise ValueError("Batched likelihood supports integrated {} only".format(key))

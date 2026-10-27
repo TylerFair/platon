@@ -295,6 +295,60 @@ class TestMarginalNuisance(unittest.TestCase):
             CombinedRetriever._nuisance_ln_like(
                 reduced, reduced._interpret_param_array([]), {"time_shift": (residuals, e)})
 
+    def test_time_shift_excess(self):
+        # One visit's time shifts with a uniform t0 offset, a Gaussian slope and a
+        # uniform error excess, all integrated: brute force over (excess, offset, slope).
+        # A global (depth) error_excess may be fitted alongside.
+        n = 22
+        x = np.linspace(-0.7, 0.8, n)
+        e = self.shift_errors[:n]
+        data = np.sqrt(e**2 + 6.0**2) * self.shift_noise[:n] + 30.0 + 4.0 * x
+        residuals = -data
+        fit_info = self.fit_info(time_shift_offsets={"t0_a": (0, n)}, time_shift_errors=e,
+                                 time_shift_slopes={"k_a": (0, n)}, time_shift_slope_basis=x,
+                                 time_shift_error_excesses={"s_t0": (0, n)})
+        fit_info.add_uniform_fit_param("t0_a", -100, 100)
+        fit_info.add_gaussian_fit_param("k_a", 3.0)
+        fit_info.add_uniform_fit_param("s_t0", 0, 20)
+        fit_info.add_uniform_fit_param("error_excess", 0, 1e-4)
+        reduced = CombinedRetriever._marginalize(fit_info)
+        self.assertEqual(sorted(reduced.marginal_params), ["error_excess", "k_a", "s_t0", "t0_a"])
+        ln_like, groups = CombinedRetriever._nuisance_ln_like(
+            reduced, reduced._interpret_param_array([]), {"time_shift": (residuals, e)})
+        self.assertEqual([g[0] for g in groups], ["s_t0"])
+
+        s = np.linspace(0, 20, 201)
+        o, k = np.linspace(-30, 90, 1201), np.linspace(-12, 12, 301)   # the likelihood is negligible outside
+        per_s = np.empty(len(s))
+        for i, excess in enumerate(s):
+            sigma = np.sqrt(e**2 + excess**2)
+            # the offset integral in closed form is what is tested elsewhere; here brute force
+            grid = np.sum(-0.5 * ((residuals[None, None, :] + o[:, None, None] + k[None, :, None] * x)
+                                  / sigma)**2 - np.log(np.sqrt(2 * np.pi) * sigma), axis=2) \
+                + scipy.stats.norm.logpdf(k, 0, 3.0)[None, :]
+            per_s[i] = scipy.special.logsumexp(grid + trapezoid_ln_weights(o)[:, None]
+                                               + trapezoid_ln_weights(k)[None, :]) - np.log(200)
+        expected = scipy.special.logsumexp(per_s + trapezoid_ln_weights(s)) - np.log(20)
+        self.assertAlmostEqual(ln_like, expected, delta=2e-3)
+
+        np.random.seed(11)
+        draws = CombinedRetriever._draw_nuisance(reduced, groups, 20000)
+        p = np.exp(per_s - per_s.max())
+        cdf = np.cumsum(p) / p.sum()
+        self.assertAlmostEqual(np.median(draws["s_t0"]), np.interp(0.5, cdf, s), delta=0.4)
+        self.assertTrue(np.all((draws["s_t0"] > 0) & (draws["s_t0"] < 20)))
+        self.assertAlmostEqual(np.mean(draws["t0_a"]), 30.0, delta=6.0)
+        self.assertTrue(np.all(np.isfinite(draws["k_a"])))
+
+        # A sampled time-shift excess widens the time-shift errors only
+        sampled = self.fit_info(time_shift_errors=e, time_shift_error_excesses={"s_t0": (0, n)})
+        sampled.add_gaussian_fit_param("s_t0", 5.0)
+        params = sampled._interpret_param_array([5.0])
+        np.testing.assert_array_equal(CombinedRetriever._excess_squared(params, "time_shift", n), np.full(n, 25.0))
+        # ... and the global depth excess never applies to time shifts
+        params["error_excess"] = 1e-4
+        np.testing.assert_array_equal(CombinedRetriever._excess_squared(params, "time_shift", n), np.full(n, 25.0))
+
     def test_ln_like_end_to_end(self):
         min_wavelength, max_wavelength, depths, errors = np.loadtxt(
             "tests/testing_data/hd209458b_transit_depths", unpack=True)
