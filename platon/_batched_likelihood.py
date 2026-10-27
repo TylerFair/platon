@@ -1,5 +1,6 @@
-"""Vectorized host preparation for two-sector transit likelihoods (Guillot,
-isothermal or Madhusudhan & Seager parametric sectors).
+"""Vectorized host preparation for transit likelihoods: two-sector terminators
+or a single (1-D) terminator, with Guillot, isothermal or Madhusudhan & Seager
+parametric profiles.
 
 CombinedRetriever's samplers use this batch wherever it applies; it returns
 the scalar likelihood's values exactly.  It deliberately checks its
@@ -12,6 +13,7 @@ the scalar likelihood, instead of silently using an approximate forward or
 changing the scalar likelihood.
 """
 import math
+from types import SimpleNamespace
 
 import numpy as np
 from scipy.special import expn
@@ -27,6 +29,10 @@ from .terminator import TwoSectorTerminator, limb_time_shifts
 from .transit_depth_calculator import DEEP_CLAMP_PRESSURE
 
 SECTORS = ("sector1.", "sector2.")
+# A 1-D terminator is one lane; its resolved values are stored under this prefix
+LANE = "lane0."
+GUILLOT_SHARED = ("T_star", "Rs", "a", "Mp", "Rp", "log_k_th", "T_int")
+CLOUD_PARAMS = ("log_cloudtop_P", "log_scatt_factor", "scatt_slope", "cloud_fraction")
 # Per-sector profile parameters of each supported two-sector profile type
 PROFILE_PARAMS = {"guillot": ("beta", "log_gamma"), "isothermal": ("T",),
                   "parametric": ("T0", "log_P1", "alpha1", "alpha2", "log_P3", "T3")}
@@ -50,11 +56,16 @@ def _scalar_power(base, exponent):
 
 
 class BatchedLikelihood:
+    # Two-sector by default; __init__ sets these from the fit
+    one_d = False
+    prefixes = SECTORS
+    profile_type = "guillot"
+
     def __init__(self, retriever, transit_calc, eclipse_calc, fit_info,
                  transit_depths, transit_errors, eclipse_depths, eclipse_errors,
                  zero_opacities=(), batch_size=64):
         if transit_calc is None or eclipse_calc is not None or eclipse_depths is not None:
-            raise ValueError("Batched likelihood requires transit-only two-sector profiles")
+            raise ValueError("Batched likelihood requires transit-only retrievals")
         self.retriever = retriever
         self.calc = transit_calc
         self.fit = fit_info
@@ -71,10 +82,18 @@ class BatchedLikelihood:
                                 for kind in ("transit", "time_shift")])
         self.vectorized_finish = set(getattr(fit_info, "marginal_params", ())) <= offsets
         terminator = p.get("transit_terminator")
-        if not isinstance(terminator, TwoSectorTerminator) or \
-           terminator.profile_type not in PROFILE_PARAMS:
-            raise ValueError("Batched likelihood requires transit-only two-sector profiles")
-        self.profile_type = terminator.profile_type
+        self.one_d = terminator is None
+        if self.one_d:
+            self.profile_type = p.get("transit_profile_type", "isothermal")
+            self.prefixes = (LANE,)
+        elif isinstance(terminator, TwoSectorTerminator):
+            self.profile_type = terminator.profile_type
+            self.prefixes = SECTORS
+        else:
+            self.profile_type = None
+        if self.profile_type not in PROFILE_PARAMS:
+            raise ValueError("Batched likelihood requires Guillot, isothermal or parametric "
+                             "transit profiles")
         # Free VMRs replace equilibrium chemistry entirely; the last gas is the filler
         self.free_vmr = bool(p["fit_vmr"]) and p["logZ"] is None and p["CO_ratio"] is None
         if p["fit_clr"] or (p["fit_vmr"] and not self.free_vmr) or \
@@ -85,35 +104,58 @@ class BatchedLikelihood:
         if self.free_vmr and any(s + "log_" + gas in fit_info.all_params
                                  for s in SECTORS for gas in self.gases):
             raise ValueError("Batched likelihood does not support per-sector abundances")
-        if p.get("n") is not None or p["cloud_fraction"] != 1:
-            raise ValueError("Batched likelihood does not support Mie or global patchy clouds")
+        if p.get("n") is not None:
+            raise ValueError("Batched likelihood does not support Mie scattering")
+        if not self.one_d and p["cloud_fraction"] != 1:
+            raise ValueError("A two-sector terminator takes per-sector cloud fractions")
         # Fixed full cloud cover uses the scalar path's single-terminator core,
-        # otherwise its fused cloudy/clear core
-        self.dual = any(s + "cloud_fraction" in names or p[s + "cloud_fraction"] != 1
-                        for s in SECTORS)
+        # otherwise its fused cloudy/clear core (the 1-D patchy cloud_fraction,
+        # or the sectors' own)
+        if self.one_d:
+            self.dual = "cloud_fraction" in names or p["cloud_fraction"] != 1
+        else:
+            self.dual = any(s + "cloud_fraction" in names or p[s + "cloud_fraction"] != 1
+                            for s in SECTORS)
         if p.get("transit_visits") or {"T_het2", "het2_cov_frac"} & names or \
            np.ndim(p["T_het"]) or np.ndim(p["het_cov_frac"]) or \
            (p.get("het2_cov_frac") is not None and np.any(np.asarray(p["het2_cov_frac"]) != 0)):
             raise ValueError("Batched likelihood supports one heterogeneity without "
                              "per-visit values")
         supported = {"Rp", "Mp", "T_star", "T_het", "het_cov_frac", "log_P_quench",
-                     "error_excess", "sector1.fraction"}
+                     "error_excess"}
         if self.profile_type == "guillot":
             supported.update(("log_k_th", "T_int"))
         if self.free_vmr:
             supported.update("log_" + gas for gas in self.gases[:-1])
         else:
             supported.update(("logZ", "CO_ratio"))
-        for sector in SECTORS:
-            supported.update(sector + n for n in PROFILE_PARAMS[self.profile_type] + (
-                "log_scatt_factor", "scatt_slope", "log_cloudtop_P", "cloud_fraction"))
-        for kind in ("transit", "time_shift"):
-            supported.update((p.get(kind + "_offsets") or {}).keys())
+        if self.one_d:
+            # Profile.from_params_dict lets "_transit" names override them
+            profile_names = PROFILE_PARAMS[self.profile_type] + \
+                (("log_k_th", "T_int") if self.profile_type == "guillot" else ())
+            supported.update(profile_names)
+            supported.update(name + "_transit" for name in profile_names)
+            supported.update(CLOUD_PARAMS)
+            supported.update((p.get("transit_offsets") or {}).keys())
+        else:
+            supported.add("sector1.fraction")
+            for sector in SECTORS:
+                supported.update(sector + n for n in PROFILE_PARAMS[self.profile_type] + CLOUD_PARAMS)
+            for kind in ("transit", "time_shift"):
+                supported.update((p.get(kind + "_offsets") or {}).keys())
         unsupported = names - supported
         if unsupported:
             raise ValueError("Unsupported batched parameters: {}".format(sorted(unsupported)))
         self.pressures = _default_pressures()
-        first = terminator.sectors_from_params(p)[0]
+        if self.one_d:
+            # The scalar path's own 1-D profile and clouds
+            first = SimpleNamespace(
+                profile=Profile.from_params_dict(self.profile_type, p, suffix="_transit"),
+                cloudtop_pressure=10.0**p["log_cloudtop_P"],
+                scattering_factor=10.0**p["log_scatt_factor"],
+                scattering_slope=p["scatt_slope"])
+        else:
+            first = terminator.sectors_from_params(p)[0]
         het_cov_frac = p["het_cov_frac"]
         if "het_cov_frac" in names and not het_cov_frac:
             # Any covering fraction inside the prior: the template only needs
@@ -154,24 +196,37 @@ class BatchedLikelihood:
         values.update(zip(self.fit.fit_param_names, rows.T))
         for name in getattr(self.fit, "marginal_params", ()):
             values[name] = 0.0
+        if self.one_d:
+            def resolve(name, default=None):
+                # Profile.from_params_dict's "_transit" override
+                value = values.get(name + "_transit")
+                value = values.get(name, default) if value is None else value
+                return default if value is None else value
+            for name in PROFILE_PARAMS[self.profile_type]:
+                values[LANE + name] = resolve(name)
+            if self.profile_type == "guillot":
+                for name in GUILLOT_SHARED:
+                    values["profile." + name] = resolve(name, 100 if name == "T_int" else None)
+            for name in CLOUD_PARAMS:
+                values[LANE + name] = values[name]
         return values
 
     def _temperatures(self, values, size):
-        """Unclamped sector temperatures (size, 2, layers), exactly as the
-        scalar profiles compute them."""
+        """Unclamped temperatures (size, lanes, layers), exactly as the scalar
+        profiles compute them; lanes are the two sectors, or one for 1-D."""
         if self.profile_type == "isothermal":
             # Profile.isothermal: np.ones(layers) * T
             T = np.stack([np.broadcast_to(np.asarray(values[s + "T"], dtype=float), (size,))
-                          for s in SECTORS], axis=1)
+                          for s in self.prefixes], axis=1)
             return np.ones(len(self.pressures)) * T[..., None]
         if self.profile_type == "parametric":
             # Profile.parametric mixes scalar and array maths; call it per row
             # so that every operation is the scalar path's own
             names = PROFILE_PARAMS["parametric"]
-            temperatures = np.empty((size, 2, len(self.pressures)))
+            temperatures = np.empty((size, len(self.prefixes), len(self.pressures)))
             with np.errstate(all="ignore"):
                 for i in range(size):
-                    for k, s in enumerate(SECTORS):
+                    for k, s in enumerate(self.prefixes):
                         params = {n: values[s + n][i] if np.ndim(values[s + n]) else values[s + n]
                                   for n in names}
                         temperatures[i, k] = Profile.from_params_dict(
@@ -180,17 +235,21 @@ class BatchedLikelihood:
         return self._guillot_temperatures(values, size)
 
     def _guillot_temperatures(self, values, size):
-        """Unclamped Guillot temperatures (size, 2, layers), as Profile.guillot
+        """Unclamped Guillot temperatures (size, lanes, layers), as Profile.guillot
         computes them: its scalar powers use C pow, its array ones the ufunc."""
+        def shared(name):
+            return values["profile." + name] if self.one_d else values[name]
+
         def column(name):
-            return np.broadcast_to(np.asarray(values[name], dtype=float), (size,))
+            return np.broadcast_to(np.asarray(shared(name), dtype=float), (size,))
 
         def sectors(name):
-            return np.stack([column("sector1." + name), column("sector2." + name)], axis=1)
+            return np.stack([np.broadcast_to(np.asarray(values[s + name], dtype=float), (size,))
+                             for s in self.prefixes], axis=1)
 
         p = self.pressures
         g = G * column("Mp") / _scalar_power(column("Rp"), 2)
-        t_eq = sectors("beta") * np.sqrt(values["Rs"] / (2 * values["a"])) * \
+        t_eq = sectors("beta") * np.sqrt(shared("Rs") / (2 * shared("a"))) * \
             column("T_star")[:, None]
         taus = _scalar_power(10.0, column("log_k_th"))[:, None, None] * p / g[:, None, None]
         gamma = _scalar_power(10.0, sectors("log_gamma"))[..., None]
@@ -204,6 +263,8 @@ class BatchedLikelihood:
             return t4**0.25
 
     def _swap(self, temperatures):
+        if self.one_d:
+            return np.zeros(len(temperatures), dtype=bool)
         probed = (self.pressures >= 10) & (self.pressures <= 1e5)
         means = temperatures[..., probed].mean(axis=2)
         return means[:, 0] > means[:, 1]
@@ -229,7 +290,7 @@ class BatchedLikelihood:
             return np.broadcast_to(np.asarray(values[name], dtype=float), (size,))
 
         def sectors(name):
-            return np.stack([column("sector1." + name), column("sector2." + name)], axis=1)
+            return np.stack([column(prefix + name) for prefix in self.prefixes], axis=1)
 
         reasons = np.full(size, "", dtype=object)
 
@@ -239,14 +300,15 @@ class BatchedLikelihood:
         # Checks in the scalar path's order, so reasons match its first one
         within_limits = np.array([self.fit._within_limits(row) for row in rows], dtype=bool)
         reject(~within_limits, "limits")
-        fraction = column("sector1.fraction")
+        fraction = np.ones(size) if self.one_d else column("sector1.fraction")
         clouds = sectors("cloud_fraction")
         reject(~((0 <= fraction) & (fraction <= 1) &
                  np.all((0 <= clouds) & (clouds <= 1), axis=1)), "fractions")
         # Rows the batch does not reproduce exactly go to the scalar likelihood.
         # Boundary cloud fractions take different scalar cores. Evaluate those
         # uncommon rows with the reference rather than changing their rounding.
-        fallback = (fraction <= 0) | (fraction >= 1)
+        fallback = np.zeros(size, dtype=bool) if self.one_d else \
+            (fraction <= 0) | (fraction >= 1)
         if self.dual:
             fallback |= ~np.all((clouds > 0) & (clouds < 1), axis=1)
         vmrs = None
@@ -262,9 +324,10 @@ class BatchedLikelihood:
         temperatures = self._temperatures(values, size)
         reject(np.any(np.isnan(temperatures), axis=(1, 2)), INVALID_PROFILE)
         values["_batch_swap"] = self._swap(temperatures)
-        # With all of the area in one sector the scalar path skips the other
-        cold_fraction = np.where(values["_batch_swap"], 1 - fraction, fraction)
-        fallback |= (cold_fraction <= 0) | (cold_fraction >= 1)
+        if not self.one_d:
+            # With all of the area in one sector the scalar path skips the other
+            cold_fraction = np.where(values["_batch_swap"], 1 - fraction, fraction)
+            fallback |= (cold_fraction <= 0) | (cold_fraction >= 1)
         # Same rule as TransitDepthCalculator._clamp_unprobed: out-of-grid
         # temperatures deeper than 10 bar and the quench point are clamped
         quench = _scalar_power(10.0, column("log_P_quench"))
@@ -290,8 +353,9 @@ class BatchedLikelihood:
         visible = np.any(above, axis=2)
         # The scalar path checks the cold sector, then the hot one
         rows_index = np.arange(size)
-        for k in (0, 1):
-            sector = np.where(values["_batch_swap"], 1 - k, k)
+        lanes = len(self.prefixes)
+        for k in range(lanes):
+            sector = np.where(values["_batch_swap"], lanes - 1 - k, k)
             reject(~in_grid[rows_index, sector], INVALID_TEMPERATURES)
             reject(~visible[rows_index, sector], BELOW_CLOUDS)
 
@@ -309,7 +373,8 @@ class BatchedLikelihood:
         reasons[fallback] = "scalar"
         valid = reasons == ""
 
-        packed = np.broadcast_to(self.template, (size, 2, len(self.template))).copy()
+        packed = np.broadcast_to(self.template, (size, len(self.prefixes),
+                                                 len(self.template))).copy()
         for name, index in (("Rp", fm.SC_RP), ("Mp", fm.SC_MP)):
             packed[:, :, index] = column(name)[:, None]
         if not self.free_vmr:
@@ -340,11 +405,11 @@ class BatchedLikelihood:
         return packed, vmrs, valid, fallback, values, clouds, fraction, reasons
 
     def _limbs(self, raw, clouds):
-        """Float64 binned depths per sector from device rows (n, 2, outputs)."""
+        """Float64 binned depths per lane from device rows (n, lanes, outputs)."""
         nbin = len(self.depths)
         if not self.dual:
             return raw[:, :, :nbin].astype(float)
-        parts = raw[:, :, :2 * nbin].reshape(-1, 2, 2, nbin).astype(float)
+        parts = raw[:, :, :2 * nbin].reshape(len(raw), raw.shape[1], 2, nbin).astype(float)
         cov = clouds[:, :, None]
         return cov * parts[:, :, 0] + (1 - cov) * parts[:, :, 1]
 
@@ -354,7 +419,7 @@ class BatchedLikelihood:
             return self._finish_scalar(rows, raw, indices, values, clouds, fraction)
         result = np.full(len(rows), -np.inf)
         nbin = len(self.depths)
-        self.last_depths = np.full((len(rows), 2, nbin), np.nan)
+        self.last_depths = np.full((len(rows), len(self.prefixes), nbin), np.nan)
         good = np.all(raw[:, :, -2] == 0, axis=1)
         indices = indices[good]
         if not len(indices):
@@ -383,11 +448,14 @@ class BatchedLikelihood:
             for name, (start, end) in (values.get(kind + "_offsets") or {}).items():
                 model[:, start:end] += column(name)[:, None]
 
-        swap = values["_batch_swap"][indices, None]
-        cold = np.where(swap, limbs[:, 1], limbs[:, 0])
-        hot = np.where(swap, limbs[:, 0], limbs[:, 1])
-        fraction = np.where(swap[:, 0], 1 - fraction, fraction)[:, None]
-        calculated = fraction * cold + (1 - fraction) * hot
+        if self.one_d:
+            calculated = limbs[:, 0].copy()
+        else:
+            swap = values["_batch_swap"][indices, None]
+            cold = np.where(swap, limbs[:, 1], limbs[:, 0])
+            hot = np.where(swap, limbs[:, 0], limbs[:, 1])
+            fraction = np.where(swap[:, 0], 1 - fraction, fraction)[:, None]
+            calculated = fraction * cold + (1 - fraction) * hot
         apply_offsets(calculated, "transit")
         excess = _scalar_power(column("error_excess"), 2)
         errors = np.sqrt(self.errors**2 + excess[:, None])
@@ -434,13 +502,15 @@ class BatchedLikelihood:
     def _finish_scalar(self, rows, raw, indices, values, clouds, fraction):
         result = np.full(len(rows), -np.inf)
         nbin = len(self.depths)
-        limb_depths = np.full((len(rows), 2, nbin), np.nan)
+        limb_depths = np.full((len(rows), len(self.prefixes), nbin), np.nan)
         for j, i in enumerate(indices):
             if np.any(raw[j, :, -2] != 0):
                 continue
             limbs = self._limbs(raw[j:j + 1], clouds[i:i + 1])[0]
             limb_depths[i] = limbs
-            if values["_batch_swap"][i]:
+            if self.one_d:
+                calculated = limbs[0].copy()
+            elif values["_batch_swap"][i]:
                 cold_fraction = 1 - fraction[i]
                 calculated = cold_fraction * limbs[1] + (1 - cold_fraction) * limbs[0]
             else:
@@ -471,8 +541,9 @@ class BatchedLikelihood:
         rows = np.asarray(rows, dtype=float)
         if rows.ndim != 2:
             raise ValueError("Expected (batch, n_parameters) input")
+        lanes = len(self.prefixes)
         if len(rows) == 0:
-            self.last_depths = np.empty((0, 2, len(self.depths)))
+            self.last_depths = np.empty((0, lanes, len(self.depths)))
             self.last_reasons = np.empty(0, dtype=object)
             return np.empty(0)
         if len(rows) > self.batch_size:
@@ -486,7 +557,7 @@ class BatchedLikelihood:
             return np.concatenate(results)
         packed, vmrs, valid, fallback, values, clouds, fraction, reasons = self.prepare(rows)
         indices = np.flatnonzero(valid)
-        raw = np.empty((0, 2, len(self.template)))
+        raw = np.empty((0, lanes, len(self.template)))
         if len(indices):
             # Cache power-of-two shapes: rejected priors should not force a
             # full GPU batch of duplicate valid rows. There are only log2(B)
@@ -498,9 +569,9 @@ class BatchedLikelihood:
             inputs = [pad(packed[indices]).reshape(-1, packed.shape[-1])]
             if vmrs is not None:
                 # Both sectors of a row share its abundances
-                inputs.append(np.repeat(pad(vmrs[indices]), 2, axis=0))
+                inputs.append(np.repeat(pad(vmrs[indices]), lanes, axis=0))
             raw = np.asarray(self.forward(self.data, *inputs))
-            raw = raw.reshape(capacity, 2, -1)[:len(indices)]
+            raw = raw.reshape(capacity, lanes, -1)[:len(indices)]
             reasons[indices[np.any(raw[:, :, -2] != 0, axis=1)]] = UNBOUND
         result = self.finish(rows, raw, indices, values, clouds, fraction)
         for i in np.flatnonzero(fallback):
