@@ -109,6 +109,14 @@ class CombinedRetriever:
             if fit_info.all_params["log_scatt_factor"].best_guess != 0:
                 raise ValueError("log scattering factor must be 0 if using Mie scattering")           
             
+        slopes = fit_info._get("time_shift_slopes") if "time_shift_slopes" in fit_info.all_params else None
+        if slopes:
+            basis = fit_info._get("time_shift_slope_basis")
+            shifts = fit_info._get("time_shifts")
+            if basis is None or shifts is None or np.shape(basis) != np.shape(shifts):
+                raise ValueError("time_shift_slopes need time_shifts and a time_shift_slope_basis "
+                                 "with one value per time shift")
+
         for name, param in fit_info.all_params.items():
             if name.split(".")[-1] != "scatt_slope":
                 continue
@@ -195,6 +203,13 @@ class CombinedRetriever:
         return squared
 
     @staticmethod
+    def _apply_slopes(shifts, params_dict):
+        """Adds each slope in params_dict["time_shift_slopes"], times its
+        range of time_shift_slope_basis, to the model time shifts, in place."""
+        for name, (start, end) in (params_dict.get("time_shift_slopes") or {}).items():
+            shifts[start:end] += params_dict[name] * params_dict["time_shift_slope_basis"][start:end]
+
+    @staticmethod
     def _apply_offsets(depths, params_dict, kind):
         """Adds each named offset in params_dict[kind + "_offsets"] (kind is
         "transit", "eclipse" or "time_shift") to its index range of the model,
@@ -218,8 +233,14 @@ class CombinedRetriever:
                 param = fit_info.all_params.get(key)
                 if param is not None and param.best_guess is not None:
                     names.update(param.best_guess)
+        param = fit_info.all_params.get("time_shift_slopes")
+        slopes = set(param.best_guess) if param is not None and param.best_guess is not None else set()
+        for name in slopes & set(fit_info.fit_param_names):
+            if not isinstance(fit_info.all_params[name], _GaussianParam):
+                raise ValueError("Fit time-shift slope {} with a Gaussian prior: a flat prior "
+                                 "absorbs the limb-asymmetry signal".format(name))
         marginal = [name for name in fit_info.fit_param_names
-                    if name in offsets or (name in excesses and isinstance(
+                    if name in offsets or name in slopes or (name in excesses and isinstance(
                         fit_info.all_params[name], _UniformParam))]
         if "error_excess" in marginal and len(excesses & set(marginal)) > 1:
             raise ValueError("Fit either error_excess or per-range error excesses, not both")
@@ -254,12 +275,18 @@ class CombinedRetriever:
         The depths sharing an integrated excess form a group, and the
         remaining data (time shifts, or everything) one more; given the
         excesses the groups are independent, and each offset must lie in one.
-        Returns the log likelihood and, per group, (excess name or None,
-        s nodes, log integrand at the nodes, [(offset name, model - data,
-        errors)] over each offset's data)."""
+        A time-shift slope (time_shift_slopes, a Gaussian prior on the
+        coefficient of time_shift_slope_basis over its range) is integrated in
+        closed form too, jointly with the offset of the same range if there is
+        one: the slope first, leaving a Gaussian in the offset.  Returns the log
+        likelihood and, per group, (excess name or None, s nodes, log
+        integrand at the nodes, [(offset name or None, model - data, errors,
+        slope or None)] over each offset's or slope's data, slope = (name,
+        basis, prior std))."""
         marginal = fit_info.marginal_params
-        # Each member is (kind, residuals, errors, [(offset, start, end)]) for a
-        # contiguous run of one kind's data, its offsets indexed within the run
+        # Each member is (kind, residuals, errors, [(offset, start, end, slope)])
+        # for a contiguous run of one kind's data, its offsets and slopes indexed
+        # within the run (offset None for a slope with no offset of its own range)
         members = {None: []}
         for kind, (residuals, errors) in blocks.items():
             ranges = []
@@ -280,15 +307,24 @@ class CombinedRetriever:
                 runs.append((None, position, len(residuals)))
             offsets = [(offset, start, end) for offset, (start, end) in
                        (params_dict.get(kind + "_offsets") or {}).items() if offset in marginal]
+            slopes = {}
+            for slope, (start, end) in (params_dict.get(kind + "_slopes") or {}).items():
+                if slope in marginal:
+                    if any(a < end and b > start and (a, b) != (start, end) for _, a, b in offsets):
+                        raise ValueError("Slope {} must cover exactly its offset's range, or no "
+                                         "offset's".format(slope))
+                    slopes[start, end] = (slope, params_dict[kind + "_slope_basis"][start:end],
+                                          fit_info.all_params[slope].std)
+            offsets += [(None, a, b) for a, b in slopes if (a, b) not in {(a, b) for _, a, b in offsets}]
             for name, start, end in runs:
                 inside = []
                 for offset, a, b in offsets:
                     if start <= a and b <= end:
-                        inside.append((offset, a - start, b - start))
+                        inside.append((offset, a - start, b - start, slopes.get((a, b))))
                     elif a < end and b > start:
                         raise ValueError(
                             "Offset {} spans data with different error excesses, "
-                            "so it cannot be integrated out".format(offset))
+                            "so it cannot be integrated out".format(offset or slopes[a, b][0]))
                 members.setdefault(name, []).append(
                     (kind, residuals[start:end], errors[start:end], inside))
 
@@ -329,11 +365,18 @@ class CombinedRetriever:
                 terms = np.full(1, -0.5 * chi2 - ln_errors - 0.5 * counts * np.log(2 * np.pi))
             group_offsets = []
             for kind, residuals, errors, inside in group:
-                for offset, start, end in inside:
+                for offset, start, end, slope in inside:
                     r, e = residuals[start:end], errors[start:end]
                     if len(r) == 0:
                         raise ValueError("Offset {} covers no data".format(offset))
                     W, R = CombinedRetriever._offset_sums(r, e, s)
+                    if slope is not None:
+                        Sx, Sxx, Rx = CombinedRetriever._slope_sums(r, e, *slope[1:])
+                        terms = terms + 0.5 * Rx**2 / Sxx - np.log(slope[2] * np.sqrt(Sxx))
+                        if offset is None:
+                            group_offsets.append((None, r, e, slope))
+                            continue
+                        W, R = W - Sx**2 / Sxx, R - Rx * Sx / Sxx
                     prior = fit_info.all_params[offset]
                     mean, std = R / W, 1 / np.sqrt(W)
                     terms = terms + 0.5 * R * mean + np.log(np.sqrt(2 * np.pi) * std)
@@ -344,7 +387,7 @@ class CombinedRetriever:
                         terms += CombinedRetriever._log_ndtr_diff(
                             (prior.high_lim - mean) / std, (prior.low_lim - mean) / std) \
                             - np.log(prior.high_lim - prior.low_lim)
-                    group_offsets.append((offset, r, e))
+                    group_offsets.append((offset, r, e, slope))
             ln_like += terms[0]
             groups.append((name, s, terms, group_offsets))
         return ln_like, groups
@@ -366,7 +409,8 @@ class CombinedRetriever:
                 - entry["half_ln"][index] - 0.5 * len(residuals) * np.log(2 * np.pi)
         group_offsets = []
         for (kind, residuals, errors, inside), entry in zip(group, rows):
-            for offset, start, end in inside:
+            for offset, start, end, slope in inside:
+                assert slope is None, "time-shift slopes have no error excess"
                 r, e = residuals[start:end], errors[start:end]
                 if len(r) == 0:
                     raise ValueError("Offset {} covers no data".format(offset))
@@ -384,7 +428,7 @@ class CombinedRetriever:
                     terms += CombinedRetriever._log_ndtr_diff(
                         (prior.high_lim - mean) / std, (prior.low_lim - mean) / std) \
                         - np.log(prior.high_lim - prior.low_lim)
-                group_offsets.append((offset, r, e))
+                group_offsets.append((offset, r, e, None))
         return terms, group_offsets
 
     @staticmethod
@@ -413,6 +457,16 @@ class CombinedRetriever:
                 inverse=inverse, coarse=np.ascontiguousarray(inverse[::EXCESS_REFINE]),
                 half_ln=0.5 * np.sum(np.log(variance), axis=1), sums={})
         return entry
+
+    @staticmethod
+    def _slope_sums(residuals, errors, basis, prior_std):
+        """For a slope x on basis over a range with an offset o: the
+        likelihood's sum of x terms, the slope's precision (with its zero-mean
+        Gaussian prior's) and its linear coefficient, from
+        sum ((model - data) + o + x * basis)**2 / errors**2."""
+        weights = errors**-2
+        return (np.sum(weights * basis), np.sum(weights * basis**2) + prior_std**-2,
+                -np.sum(weights * basis * residuals))
 
     @staticmethod
     def _offset_sums(residuals, errors, s):
@@ -463,23 +517,31 @@ class CombinedRetriever:
             if name is not None:  # inside the open prior interval
                 excess = values[name] = np.clip(
                     excess, np.nextafter(x[0], x[-1]), np.nextafter(x[-1], x[0]))
-            for offset, r, e in offsets:
-                prior = fit_info.all_params[offset]
+            for offset, r, e, tilt in offsets:
                 W, R = CombinedRetriever._offset_sums(r, e, excess)
-                mean, std = R / W, 1 / np.sqrt(W)
-                if isinstance(prior, _GaussianParam):
-                    var = 1 / (std**-2 + prior.std**-2)
-                    mean = var * (mean / std**2 + prior.best_guess / prior.std**2)
-                    values[offset] = mean if mode else \
-                        np.random.normal(mean, np.sqrt(var), size)
-                elif mode:  # inside the open prior interval
-                    values[offset] = np.clip(
-                        mean, np.nextafter(prior.low_lim, prior.high_lim),
-                        np.nextafter(prior.high_lim, prior.low_lim))
-                else:
-                    values[offset] = scipy.stats.truncnorm.rvs(
-                        (prior.low_lim - mean) / std, (prior.high_lim - mean) / std,
-                        loc=mean, scale=std, size=size)
+                if tilt is not None:
+                    Sx, Sxx, Rx = CombinedRetriever._slope_sums(r, e, *tilt[1:])
+                    W, R = W - Sx**2 / Sxx, R - Rx * Sx / Sxx
+                if offset is not None:
+                    prior = fit_info.all_params[offset]
+                    mean, std = R / W, 1 / np.sqrt(W)
+                    if isinstance(prior, _GaussianParam):
+                        var = 1 / (std**-2 + prior.std**-2)
+                        mean = var * (mean / std**2 + prior.best_guess / prior.std**2)
+                        values[offset] = mean if mode else \
+                            np.random.normal(mean, np.sqrt(var), size)
+                    elif mode:  # inside the open prior interval
+                        values[offset] = np.clip(
+                            mean, np.nextafter(prior.low_lim, prior.high_lim),
+                            np.nextafter(prior.high_lim, prior.low_lim))
+                    else:
+                        values[offset] = scipy.stats.truncnorm.rvs(
+                            (prior.low_lim - mean) / std, (prior.high_lim - mean) / std,
+                            loc=mean, scale=std, size=size)
+                if tilt is not None:   # given the offset, a Gaussian
+                    level = values[offset] if offset is not None else 0
+                    mean = (Rx - level * Sx) / Sxx
+                    values[tilt[0]] = mean if mode else np.random.normal(mean, Sxx**-0.5, size)
         return values
 
     def _batched_ln_like(self, transit_calc, eclipse_calc, fit_info,
@@ -703,6 +765,7 @@ class CombinedRetriever:
                     shifts = limb_time_shifts(leading, trailing, Rs, params_dict["a"], params_dict["period"], params_dict["b"]) \
                         if coefficients is None else coefficients * (np.sqrt(trailing) - np.sqrt(leading))
                     self._apply_offsets(shifts, params_dict, "time_shift")
+                    self._apply_slopes(shifts, params_dict)
                     residuals = shifts - params_dict["time_shifts"]
                     errors = params_dict["time_shift_errors"]
                     blocks["time_shift"] = residuals, errors
@@ -1458,6 +1521,7 @@ class CombinedRetriever:
                              transit_visits=None,
                              time_shifts=None, time_shift_errors=None, period=None, b=None,
                              time_shift_offsets=None, time_shift_coefficients=None,
+                             time_shift_slopes=None, time_shift_slope_basis=None,
                              **profile_kwargs):
         '''Get a :class:`.FitInfo` object filled with best guess values.  A few
         parameters are required, but others can be set to default values if you
@@ -1524,6 +1588,17 @@ class CombinedRetriever:
             The retrievers integrate every fitted offset, and error_excess if
             fitted with a uniform prior, out of the likelihood rather than
             sampling it (see their marginalize_nuisance argument).
+        time_shift_slopes, time_shift_slope_basis : dict and array, optional
+            Per-visit chromatic slopes in the time shifts, e.g. from spot
+            crossings too weak to detect in the light curves: each name maps to
+            the (start, end) range of one visit, and adds name *
+            time_shift_slope_basis (one value per transit point, e.g. ln of the
+            wavelength minus its weighted mean over the visit) to the model
+            shifts there.  Each name becomes a parameter with a default value of
+            0; fit one only with a zero-mean Gaussian prior sized to what an
+            undetected spot can do (a flat prior absorbs the limb-asymmetry
+            signal), and the retrievers integrate it out in closed form, jointly
+            with the time-shift offset of the same range.
         time_shift_coefficients : array, optional
             Calibrated shift per unit trailing-minus-leading radius, in s per
             stellar radius, one per transit point (e.g. from injecting a small
@@ -1598,7 +1673,8 @@ class CombinedRetriever:
                 ("eclipse", "offsets", eclipse_offsets),
                 ("time_shift", "offsets", time_shift_offsets),
                 ("transit", "error excesses", transit_error_excesses),
-                ("eclipse", "error excesses", eclipse_error_excesses)):
+                ("eclipse", "error excesses", eclipse_error_excesses),
+                ("time_shift", "slopes", time_shift_slopes)):
             if ranges is None:
                 continue
             for name, index_range in ranges.items():

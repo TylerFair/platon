@@ -226,6 +226,75 @@ class TestMarginalNuisance(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "not both"):
             CombinedRetriever._marginalize(both)
 
+    def test_time_shift_slopes(self):
+        # Visit a: a uniform t0 offset and a Gaussian slope, integrated jointly;
+        # range b: a slope with no offset.  Brute force on grids.
+        n, a = self.n, 22
+        x = np.r_[np.linspace(-0.7, 0.8, a), np.linspace(-0.5, 0.6, n - a)]
+        e = self.shift_errors
+        data = e * self.shift_noise + np.r_[np.full(a, 30.0), np.zeros(n - a)] + 4.0 * x
+        residuals = -data   # the model predicts no shift
+        fit_info = self.fit_info(time_shift_offsets={"t0_a": (0, a)}, time_shift_errors=e,
+                                 time_shift_slopes={"k_a": (0, a), "k_b": (a, n)},
+                                 time_shift_slope_basis=x)
+        fit_info.add_uniform_fit_param("t0_a", -100, 100)
+        fit_info.add_gaussian_fit_param("k_a", 3.0)
+        fit_info.add_gaussian_fit_param("k_b", 2.0)
+        reduced = CombinedRetriever._marginalize(fit_info)
+        self.assertEqual(sorted(reduced.marginal_params), ["k_a", "k_b", "t0_a"])
+        params_dict = reduced._interpret_param_array([])
+        ln_like, groups = CombinedRetriever._nuisance_ln_like(
+            reduced, params_dict, {"time_shift": (residuals, e)})
+
+        o, k = np.linspace(-100, 100, 4001), np.linspace(-15, 15, 1501)
+        def ln_point(r, err):
+            return -0.5 * (r / err)**2 - np.log(np.sqrt(2 * np.pi) * err)
+        grid = ln_point(residuals[None, None, :a] + o[:, None, None] + k[None, :, None] * x[None, None, :a],
+                        e[None, None, :a]).sum(axis=2) + scipy.stats.norm.logpdf(k, 0, 3.0)[None, :]
+        part_a = scipy.special.logsumexp(grid + trapezoid_ln_weights(o)[:, None]
+                                         + trapezoid_ln_weights(k)[None, :]) - np.log(200)
+        one = ln_point(residuals[None, a:] + k[:, None] * x[None, a:], e[None, a:]).sum(axis=1) \
+            + scipy.stats.norm.logpdf(k, 0, 2.0)
+        part_b = scipy.special.logsumexp(one + trapezoid_ln_weights(k))
+        self.assertAlmostEqual(ln_like, part_a + part_b, delta=1e-3)
+
+        # The joint draws follow the brute-force posterior
+        np.random.seed(5)
+        draws = CombinedRetriever._draw_nuisance(reduced, groups, 20000)
+        p = np.exp(grid - grid.max())
+        p /= p.sum()
+        for name, values, axis in (("t0_a", o, 1), ("k_a", k, 0)):
+            marginal = p.sum(axis=axis)
+            mean = np.sum(values * marginal)
+            std = np.sqrt(np.sum((values - mean)**2 * marginal))
+            self.assertAlmostEqual(np.mean(draws[name]), mean, delta=0.03 * std)
+            self.assertAlmostEqual(np.std(draws[name]), std, delta=0.03 * std)
+        q = np.exp(one - one.max())
+        q /= q.sum()
+        self.assertAlmostEqual(np.mean(draws["k_b"]), np.sum(k * q), delta=0.05)
+        mode = CombinedRetriever._draw_nuisance(reduced, groups, 1, mode=True)
+        self.assertAlmostEqual(mode["k_a"][0], k[np.unravel_index(np.argmax(grid), grid.shape)[1]], delta=0.1)
+
+        # A sampled slope adds to the model shifts over its range only
+        shifts = np.zeros(n)
+        CombinedRetriever._apply_slopes(shifts, dict(params_dict, k_a=2.0, k_b=0.0))
+        np.testing.assert_array_equal(shifts, np.r_[2.0 * x[:a], np.zeros(n - a)])
+
+        # Never a flat slope prior; a slope must cover its offset's whole range
+        flat = self.fit_info(time_shift_errors=e, time_shift_slopes={"k_a": (0, a)},
+                             time_shift_slope_basis=x)
+        flat.add_uniform_fit_param("k_a", -5, 5)
+        with self.assertRaisesRegex(ValueError, "Gaussian prior"):
+            CombinedRetriever._marginalize(flat)
+        partial = self.fit_info(time_shift_offsets={"t0_a": (0, a)}, time_shift_errors=e,
+                                time_shift_slopes={"k_a": (0, a - 5)}, time_shift_slope_basis=x)
+        partial.add_uniform_fit_param("t0_a", -100, 100)
+        partial.add_gaussian_fit_param("k_a", 3.0)
+        reduced = CombinedRetriever._marginalize(partial)
+        with self.assertRaisesRegex(ValueError, "exactly its offset's range"):
+            CombinedRetriever._nuisance_ln_like(
+                reduced, reduced._interpret_param_array([]), {"time_shift": (residuals, e)})
+
     def test_ln_like_end_to_end(self):
         min_wavelength, max_wavelength, depths, errors = np.loadtxt(
             "tests/testing_data/hd209458b_transit_depths", unpack=True)
