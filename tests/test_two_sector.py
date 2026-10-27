@@ -244,6 +244,24 @@ class TestTwoSectorForwardModel(unittest.TestCase):
             [defaults[name] for name in fit_info.fit_param_names],
             self.calculator, None, fit_info, depths, np.full_like(depths, 1e-5), None, None)))
 
+    def test_haze_slope_limit(self):
+        from platon.combined_retriever import CombinedRetriever
+        retriever = CombinedRetriever()
+        one_d = retriever.get_default_fit_info(self.Rs, self.Mp, self.Rp, T=1000)
+        one_d.add_uniform_fit_param("scatt_slope", -2, 15)
+        retriever._validate_params(one_d, self.calculator)
+        steep = retriever.get_default_fit_info(self.Rs, self.Mp, self.Rp, T=1000)
+        steep.add_uniform_fit_param("scatt_slope", -2, 20)
+        with self.assertRaisesRegex(ValueError, "scatt_slope upper limit 20"):
+            retriever._validate_params(steep, self.calculator)
+        model = TwoSectorTerminator(
+            TerminatorSector(Profile.parametric(900, 1e2, 1, 1, 1e6, 1500)),
+            TerminatorSector(Profile.parametric(1200, 1e2, 1, 1, 1e6, 1800)), 0.4)
+        two = retriever.get_default_fit_info(self.Rs, self.Mp, self.Rp, transit_terminator=model)
+        two.add_uniform_fit_param("sector2.scatt_slope", -2, 15.5)
+        with self.assertRaisesRegex(ValueError, "sector2.scatt_slope upper limit 15.5"):
+            retriever._validate_params(two, self.calculator)
+
     def test_weighted_depths_and_full_output(self):
         cold = TerminatorSector(isothermal(900), 1e3, 100, 6, 0.3)
         hot = TerminatorSector(isothermal(1400), 1e6, 0.1, 2, 0.8)

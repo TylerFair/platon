@@ -38,6 +38,9 @@ assert (N_EXCESS_NODES - 1) % EXCESS_REFINE == 0
 # err**2 + s**2 at those nodes and half the sum of its log, which depend only
 # on the data errors and the prior: kept for a few error arrays
 _EXCESS_VARIANCES = {}
+# Steepest allowed haze slope (cross section ~ wavelength**-scatt_slope), as a
+# fitted upper limit or a fixed value
+MAX_SCATT_SLOPE = 15
 
 
 class CombinedRetriever:
@@ -106,6 +109,14 @@ class CombinedRetriever:
             if fit_info.all_params["log_scatt_factor"].best_guess != 0:
                 raise ValueError("log scattering factor must be 0 if using Mie scattering")           
             
+        for name, param in fit_info.all_params.items():
+            if name.split(".")[-1] != "scatt_slope":
+                continue
+            fitted = name in fit_info.fit_param_names and isinstance(param, _UniformParam)
+            upper = param.high_lim if fitted else param.best_guess
+            if upper > MAX_SCATT_SLOPE:
+                raise ValueError("{} {} {} exceeds the maximum haze slope {}".format(
+                    name, "upper limit" if fitted else "value", upper, MAX_SCATT_SLOPE))
         
         for name in fit_info.fit_param_names:
             this_param = fit_info.all_params[name]
