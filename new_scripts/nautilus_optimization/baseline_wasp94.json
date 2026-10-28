@@ -1,0 +1,1651 @@
+{
+  "checkpoint": {
+    "path": "/scratch/midway3/tfairnington/time_shift/wasp94_eq_guillot/results/nautilus_checkpoint.hdf5",
+    "size_bytes": 6704023728,
+    "mtime_ns": 1792699585633354919
+  },
+  "checkpoint_content_hashed": false,
+  "read_mode": "streamed_likelihoods",
+  "settings": {
+    "_discard_exploration": true,
+    "enlarge_per_dim": 1.1,
+    "explored": true,
+    "n_batch": 512,
+    "n_dim": 22,
+    "n_like": 35559744,
+    "n_like_iter": 19392,
+    "n_like_new_bound": 50000,
+    "n_live": 5000,
+    "n_networks": 16,
+    "n_points_min": 72,
+    "n_update": 5000,
+    "n_update_iter": 3566,
+    "pass_dict": false,
+    "split_threshold": 100,
+    "vectorized": false
+  },
+  "summary": {
+    "likelihood_calls": 35559744,
+    "stored_calls": 35559744,
+    "unaccounted_calls": 0,
+    "exploration_membership": 1287680,
+    "estimator_calls": 34272064,
+    "transfer_candidates": 19228,
+    "unused_transfers": 0,
+    "shells": 61,
+    "log_evidence": 1142.9780363272064,
+    "effective_samples": 5000.129215694946,
+    "calls_per_effective_sample": 7111.765009668397,
+    "explored": true
+  },
+  "shells": [
+    {
+      "shell": 0,
+      "stored_calls": 5133,
+      "exploration_membership": 5069,
+      "estimator_calls": 64,
+      "dataset_estimator_rows": 64,
+      "log_volume": -0.6931471805599453,
+      "log_likelihood_threshold": null,
+      "log_evidence": -232888.18087592456,
+      "posterior_mass": 0.0,
+      "effective_samples": 1.0,
+      "inverse_ess_fraction": 0.0,
+      "likelihood_call_fraction": 1.7997879849753698e-06,
+      "bound_draws": 10176,
+      "streamed": {
+        "finite_calls": 58,
+        "max_log_likelihood": -232883.32884566064,
+        "log_evidence": -232888.18087592456,
+        "effective_samples": 1.0,
+        "log_evidence_delta": 0.0,
+        "relative_ess_delta": 0.0
+      }
+    },
+    {
+      "shell": 1,
+      "stored_calls": 5184,
+      "exploration_membership": 5120,
+      "estimator_calls": 64,
+      "dataset_estimator_rows": 64,
+      "log_volume": -1.39759596510844,
+      "log_likelihood_threshold": -280846.5496742809,
+      "log_evidence": -35232.549699544084,
+      "posterior_mass": 0.0,
+      "effective_samples": 1.0,
+      "inverse_ess_fraction": 0.0,
+      "likelihood_call_fraction": 1.7997879849753698e-06,
+      "bound_draws": 10357,
+      "streamed": {
+        "finite_calls": 64,
+        "max_log_likelihood": -35226.99322049562,
+        "log_evidence": -35232.549699544084,
+        "effective_samples": 1.0,
+        "log_evidence_delta": 0.0,
+        "relative_ess_delta": 0.0
+      }
+    },
+    {
+      "shell": 2,
+      "stored_calls": 5592,
+      "exploration_membership": 5528,
+      "estimator_calls": 64,
+      "dataset_estimator_rows": 64,
+      "log_volume": -1.8642623637347828,
+      "log_likelihood_threshold": -78557.43680943426,
+      "log_evidence": -31026.539777923128,
+      "posterior_mass": 0.0,
+      "effective_samples": 1.0,
+      "inverse_ess_fraction": 0.0,
+      "likelihood_call_fraction": 1.7997879849753698e-06,
+      "bound_draws": 10846,
+      "streamed": {
+        "finite_calls": 64,
+        "max_log_likelihood": -31020.516632476032,
+        "log_evidence": -31026.539777923128,
+        "effective_samples": 1.0,
+        "log_evidence_delta": 0.0,
+        "relative_ess_delta": 0.0
+      }
+    },
+    {
+      "shell": 3,
+      "stored_calls": 5790,
+      "exploration_membership": 5726,
+      "estimator_calls": 64,
+      "dataset_estimator_rows": 64,
+      "log_volume": -2.71588521751235,
+      "log_likelihood_threshold": -32057.79907792006,
+      "log_evidence": -12240.652380296347,
+      "posterior_mass": 0.0,
+      "effective_samples": 1.0,
+      "inverse_ess_fraction": 0.0,
+      "likelihood_call_fraction": 1.7997879849753698e-06,
+      "bound_draws": 11287,
+      "streamed": {
+        "finite_calls": 63,
+        "max_log_likelihood": -12233.777611995476,
+        "log_evidence": -12240.652380296347,
+        "effective_samples": 1.0,
+        "log_evidence_delta": 0.0,
+        "relative_ess_delta": 0.0
+      }
+    },
+    {
+      "shell": 4,
+      "stored_calls": 6538,
+      "exploration_membership": 6474,
+      "estimator_calls": 64,
+      "dataset_estimator_rows": 64,
+      "log_volume": -3.451879279281491,
+      "log_likelihood_threshold": -17173.395204179265,
+      "log_evidence": -9587.80774340492,
+      "posterior_mass": 0.0,
+      "effective_samples": 1.0,
+      "inverse_ess_fraction": 0.0,
+      "likelihood_call_fraction": 1.7997879849753698e-06,
+      "bound_draws": 12163,
+      "streamed": {
+        "finite_calls": 64,
+        "max_log_likelihood": -9580.196981042278,
+        "log_evidence": -9587.80774340492,
+        "effective_samples": 1.0,
+        "log_evidence_delta": 0.0,
+        "relative_ess_delta": 0.0
+      }
+    },
+    {
+      "shell": 5,
+      "stored_calls": 6726,
+      "exploration_membership": 6662,
+      "estimator_calls": 64,
+      "dataset_estimator_rows": 64,
+      "log_volume": -4.110343833367734,
+      "log_likelihood_threshold": -10812.91815095903,
+      "log_evidence": -5268.423601077213,
+      "posterior_mass": 0.0,
+      "effective_samples": 1.0,
+      "inverse_ess_fraction": 0.0,
+      "likelihood_call_fraction": 1.7997879849753698e-06,
+      "bound_draws": 12654,
+      "streamed": {
+        "finite_calls": 64,
+        "max_log_likelihood": -5260.1543741604855,
+        "log_evidence": -5268.423601077213,
+        "effective_samples": 1.0,
+        "log_evidence_delta": 0.0,
+        "relative_ess_delta": 0.0
+      }
+    },
+    {
+      "shell": 6,
+      "stored_calls": 7373,
+      "exploration_membership": 7309,
+      "estimator_calls": 64,
+      "dataset_estimator_rows": 64,
+      "log_volume": -4.852373913277381,
+      "log_likelihood_threshold": -7299.049846104597,
+      "log_evidence": -3045.209874570988,
+      "posterior_mass": 0.0,
+      "effective_samples": 1.0,
+      "inverse_ess_fraction": 0.0,
+      "likelihood_call_fraction": 1.7997879849753698e-06,
+      "bound_draws": 13548,
+      "streamed": {
+        "finite_calls": 64,
+        "max_log_likelihood": -3036.198617574351,
+        "log_evidence": -3045.209874570988,
+        "effective_samples": 1.0,
+        "log_evidence_delta": 0.0,
+        "relative_ess_delta": 0.0
+      }
+    },
+    {
+      "shell": 7,
+      "stored_calls": 8061,
+      "exploration_membership": 7997,
+      "estimator_calls": 64,
+      "dataset_estimator_rows": 64,
+      "log_volume": -5.68189928016491,
+      "log_likelihood_threshold": -4976.063522283679,
+      "log_evidence": -1172.7999108259883,
+      "posterior_mass": 0.0,
+      "effective_samples": 1.0,
+      "inverse_ess_fraction": 0.0,
+      "likelihood_call_fraction": 1.7997879849753698e-06,
+      "bound_draws": 14502,
+      "streamed": {
+        "finite_calls": 64,
+        "max_log_likelihood": -1162.9591284624637,
+        "log_evidence": -1172.7999108259883,
+        "effective_samples": 1.0,
+        "log_evidence_delta": 0.0,
+        "relative_ess_delta": 0.0
+      }
+    },
+    {
+      "shell": 8,
+      "stored_calls": 8317,
+      "exploration_membership": 8253,
+      "estimator_calls": 64,
+      "dataset_estimator_rows": 64,
+      "log_volume": -6.356671052009159,
+      "log_likelihood_threshold": -3442.2165598855427,
+      "log_evidence": -1281.110740923923,
+      "posterior_mass": 0.0,
+      "effective_samples": 1.0032766340204644,
+      "inverse_ess_fraction": 0.0,
+      "likelihood_call_fraction": 1.7997879849753698e-06,
+      "bound_draws": 15204,
+      "streamed": {
+        "finite_calls": 64,
+        "max_log_likelihood": -1270.5968237693774,
+        "log_evidence": -1281.110740923923,
+        "effective_samples": 1.0032766340204644,
+        "log_evidence_delta": 0.0,
+        "relative_ess_delta": 0.0
+      }
+    },
+    {
+      "shell": 9,
+      "stored_calls": 9033,
+      "exploration_membership": 8969,
+      "estimator_calls": 64,
+      "dataset_estimator_rows": 64,
+      "log_volume": -7.013462495868824,
+      "log_likelihood_threshold": -2312.3492251892444,
+      "log_evidence": -897.3261295843494,
+      "posterior_mass": 0.0,
+      "effective_samples": 1.0000000006300525,
+      "inverse_ess_fraction": 0.0,
+      "likelihood_call_fraction": 1.7997879849753698e-06,
+      "bound_draws": 16276,
+      "streamed": {
+        "finite_calls": 64,
+        "max_log_likelihood": -886.1537840054359,
+        "log_evidence": -897.3261295843494,
+        "effective_samples": 1.0000000006300525,
+        "log_evidence_delta": 0.0,
+        "relative_ess_delta": 0.0
+      }
+    },
+    {
+      "shell": 10,
+      "stored_calls": 9699,
+      "exploration_membership": 9635,
+      "estimator_calls": 64,
+      "dataset_estimator_rows": 64,
+      "log_volume": -7.863065833359116,
+      "log_likelihood_threshold": -1509.834346890176,
+      "log_evidence": 18.56086391870768,
+      "posterior_mass": 0.0,
+      "effective_samples": 1.0,
+      "inverse_ess_fraction": 0.0,
+      "likelihood_call_fraction": 1.7997879849753698e-06,
+      "bound_draws": 17175,
+      "streamed": {
+        "finite_calls": 64,
+        "max_log_likelihood": 30.582812835426466,
+        "log_evidence": 18.56086391870768,
+        "effective_samples": 1.0,
+        "log_evidence_delta": 0.0,
+        "relative_ess_delta": 0.0
+      }
+    },
+    {
+      "shell": 11,
+      "stored_calls": 10143,
+      "exploration_membership": 10079,
+      "estimator_calls": 64,
+      "dataset_estimator_rows": 64,
+      "log_volume": -8.502601622324434,
+      "log_likelihood_threshold": -899.5166385872365,
+      "log_evidence": -116.54149754102096,
+      "posterior_mass": 0.0,
+      "effective_samples": 1.0,
+      "inverse_ess_fraction": 0.0,
+      "likelihood_call_fraction": 1.7997879849753698e-06,
+      "bound_draws": 18143,
+      "streamed": {
+        "finite_calls": 64,
+        "max_log_likelihood": -103.88001283533686,
+        "log_evidence": -116.54149754102096,
+        "effective_samples": 1.0,
+        "log_evidence_delta": 0.0,
+        "relative_ess_delta": 0.0
+      }
+    },
+    {
+      "shell": 12,
+      "stored_calls": 11014,
+      "exploration_membership": 10950,
+      "estimator_calls": 64,
+      "dataset_estimator_rows": 64,
+      "log_volume": -9.347132753117739,
+      "log_likelihood_threshold": -454.2414345575662,
+      "log_evidence": 661.211541026363,
+      "posterior_mass": 5.9083950412111736e-210,
+      "effective_samples": 1.0,
+      "inverse_ess_fraction": 0.0,
+      "likelihood_call_fraction": 1.7997879849753698e-06,
+      "bound_draws": 19394,
+      "streamed": {
+        "finite_calls": 64,
+        "max_log_likelihood": 674.7175568628404,
+        "log_evidence": 661.211541026363,
+        "effective_samples": 1.0,
+        "log_evidence_delta": 0.0,
+        "relative_ess_delta": 0.0
+      }
+    },
+    {
+      "shell": 13,
+      "stored_calls": 11720,
+      "exploration_membership": 11656,
+      "estimator_calls": 64,
+      "dataset_estimator_rows": 64,
+      "log_volume": -9.863835536283275,
+      "log_likelihood_threshold": -121.25042153836739,
+      "log_evidence": 578.7801831429388,
+      "posterior_mass": 9.375310508996586e-246,
+      "effective_samples": 1.0,
+      "inverse_ess_fraction": 0.0,
+      "likelihood_call_fraction": 1.7997879849753698e-06,
+      "bound_draws": 20260,
+      "streamed": {
+        "finite_calls": 64,
+        "max_log_likelihood": 592.8029017625818,
+        "log_evidence": 578.7801831429388,
+        "effective_samples": 1.0,
+        "log_evidence_delta": 0.0,
+        "relative_ess_delta": 0.0
+      }
+    },
+    {
+      "shell": 14,
+      "stored_calls": 12001,
+      "exploration_membership": 11937,
+      "estimator_calls": 64,
+      "dataset_estimator_rows": 64,
+      "log_volume": -10.936317563281802,
+      "log_likelihood_threshold": 145.52995200234045,
+      "log_evidence": 443.6833772354765,
+      "posterior_mass": 1.996127749227008e-304,
+      "effective_samples": 1.0000000000139835,
+      "inverse_ess_fraction": 0.0,
+      "likelihood_call_fraction": 1.7997879849753698e-06,
+      "bound_draws": 21044,
+      "streamed": {
+        "finite_calls": 64,
+        "max_log_likelihood": 458.778577882111,
+        "log_evidence": 443.6833772354765,
+        "effective_samples": 1.0000000000139835,
+        "log_evidence_delta": 0.0,
+        "relative_ess_delta": 0.0
+      }
+    },
+    {
+      "shell": 15,
+      "stored_calls": 12379,
+      "exploration_membership": 12315,
+      "estimator_calls": 64,
+      "dataset_estimator_rows": 64,
+      "log_volume": -11.78325841376532,
+      "log_likelihood_threshold": 344.59958505197847,
+      "log_evidence": 532.6350678326113,
+      "posterior_mass": 8.539190736881746e-266,
+      "effective_samples": 1.0155321055755793,
+      "inverse_ess_fraction": 0.0,
+      "likelihood_call_fraction": 1.7997879849753698e-06,
+      "bound_draws": 21712,
+      "streamed": {
+        "finite_calls": 64,
+        "max_log_likelihood": 548.5694728127801,
+        "log_evidence": 532.6350678326113,
+        "effective_samples": 1.0155321055755793,
+        "log_evidence_delta": 0.0,
+        "relative_ess_delta": 0.0
+      }
+    },
+    {
+      "shell": 16,
+      "stored_calls": 13668,
+      "exploration_membership": 13604,
+      "estimator_calls": 64,
+      "dataset_estimator_rows": 64,
+      "log_volume": -12.481249327143042,
+      "log_likelihood_threshold": 503.49290708295257,
+      "log_evidence": 707.7587006675783,
+      "posterior_mass": 9.697149819013976e-190,
+      "effective_samples": 1.0,
+      "inverse_ess_fraction": 0.0,
+      "likelihood_call_fraction": 1.7997879849753698e-06,
+      "bound_draws": 23208,
+      "streamed": {
+        "finite_calls": 64,
+        "max_log_likelihood": 724.398833078081,
+        "log_evidence": 707.7587006675783,
+        "effective_samples": 1.0,
+        "log_evidence_delta": 0.0,
+        "relative_ess_delta": 0.0
+      }
+    },
+    {
+      "shell": 17,
+      "stored_calls": 13670,
+      "exploration_membership": 13606,
+      "estimator_calls": 64,
+      "dataset_estimator_rows": 64,
+      "log_volume": -13.241353429564336,
+      "log_likelihood_threshold": 628.9687702025701,
+      "log_evidence": 921.1535916939997,
+      "posterior_mass": 4.6011643324458675e-97,
+      "effective_samples": 1.0,
+      "inverse_ess_fraction": 1.0585630165928058e-189,
+      "likelihood_call_fraction": 1.7997879849753698e-06,
+      "bound_draws": 23159,
+      "streamed": {
+        "finite_calls": 64,
+        "max_log_likelihood": 938.5538282069238,
+        "log_evidence": 921.1535916939997,
+        "effective_samples": 1.0,
+        "log_evidence_delta": 0.0,
+        "relative_ess_delta": 0.0
+      }
+    },
+    {
+      "shell": 18,
+      "stored_calls": 13559,
+      "exploration_membership": 13495,
+      "estimator_calls": 64,
+      "dataset_estimator_rows": 64,
+      "log_volume": -14.064740713226307,
+      "log_likelihood_threshold": 728.5558735724426,
+      "log_evidence": 903.0668206581993,
+      "posterior_mass": 6.4251443365888914e-105,
+      "effective_samples": 1.0,
+      "inverse_ess_fraction": 2.06417733074311e-205,
+      "likelihood_call_fraction": 1.7997879849753698e-06,
+      "bound_draws": 23248,
+      "streamed": {
+        "finite_calls": 64,
+        "max_log_likelihood": 921.2904444547853,
+        "log_evidence": 903.0668206581993,
+        "effective_samples": 1.0,
+        "log_evidence_delta": 0.0,
+        "relative_ess_delta": 0.0
+      }
+    },
+    {
+      "shell": 19,
+      "stored_calls": 13811,
+      "exploration_membership": 13747,
+      "estimator_calls": 64,
+      "dataset_estimator_rows": 64,
+      "log_volume": -15.085703058529058,
+      "log_likelihood_threshold": 807.4630849083455,
+      "log_evidence": 931.8701320712308,
+      "posterior_mass": 2.0749235289317e-92,
+      "effective_samples": 1.0384256263759906,
+      "inverse_ess_fraction": 2.073051167180796e-180,
+      "likelihood_call_fraction": 1.7997879849753698e-06,
+      "bound_draws": 23776,
+      "streamed": {
+        "finite_calls": 64,
+        "max_log_likelihood": 951.0956812215888,
+        "log_evidence": 931.8701320712308,
+        "effective_samples": 1.0384256263759906,
+        "log_evidence_delta": 0.0,
+        "relative_ess_delta": 0.0
+      }
+    },
+    {
+      "shell": 20,
+      "stored_calls": 14997,
+      "exploration_membership": 14933,
+      "estimator_calls": 64,
+      "dataset_estimator_rows": 64,
+      "log_volume": -15.746332394946187,
+      "log_likelihood_threshold": 869.0215735148295,
+      "log_evidence": 1003.1226069366952,
+      "posterior_mass": 1.8262437871863012e-61,
+      "effective_samples": 1.0,
+      "inverse_ess_fraction": 1.6676262807023112e-118,
+      "likelihood_call_fraction": 1.7997879849753698e-06,
+      "bound_draws": 24857,
+      "streamed": {
+        "finite_calls": 64,
+        "max_log_likelihood": 1023.0278224150011,
+        "log_evidence": 1003.1226069366952,
+        "effective_samples": 1.0,
+        "log_evidence_delta": 0.0,
+        "relative_ess_delta": 0.0
+      }
+    },
+    {
+      "shell": 21,
+      "stored_calls": 13334,
+      "exploration_membership": 13270,
+      "estimator_calls": 64,
+      "dataset_estimator_rows": 64,
+      "log_volume": -16.781165211505485,
+      "log_likelihood_threshold": 917.0739575241755,
+      "log_evidence": 990.9739439765367,
+      "posterior_mass": 9.670779147795669e-67,
+      "effective_samples": 1.7956033123406312,
+      "inverse_ess_fraction": 2.6043164889371568e-129,
+      "likelihood_call_fraction": 1.7997879849753698e-06,
+      "bound_draws": 24122,
+      "streamed": {
+        "finite_calls": 64,
+        "max_log_likelihood": 1011.5115724098873,
+        "log_evidence": 990.9739439765367,
+        "effective_samples": 1.7956033123406312,
+        "log_evidence_delta": 0.0,
+        "relative_ess_delta": 0.0
+      }
+    },
+    {
+      "shell": 22,
+      "stored_calls": 16230,
+      "exploration_membership": 16166,
+      "estimator_calls": 64,
+      "dataset_estimator_rows": 64,
+      "log_volume": -17.47984182317508,
+      "log_likelihood_threshold": 956.6122079582383,
+      "log_evidence": 1021.2979402510923,
+      "posterior_mass": 1.4289127673893716e-53,
+      "effective_samples": 1.0,
+      "inverse_ess_fraction": 1.0209222315574801e-102,
+      "likelihood_call_fraction": 1.7997879849753698e-06,
+      "bound_draws": 26928,
+      "streamed": {
+        "finite_calls": 64,
+        "max_log_likelihood": 1042.936665157627,
+        "log_evidence": 1021.2979402510922,
+        "effective_samples": 1.0,
+        "log_evidence_delta": -1.1368683772161603e-13,
+        "relative_ess_delta": 0.0
+      }
+    },
+    {
+      "shell": 23,
+      "stored_calls": 15442,
+      "exploration_membership": 15378,
+      "estimator_calls": 64,
+      "dataset_estimator_rows": 64,
+      "log_volume": -18.446386352897225,
+      "log_likelihood_threshold": 988.0046087135233,
+      "log_evidence": 1009.3539902802586,
+      "posterior_mass": 9.285689389452999e-59,
+      "effective_samples": 1.000005426470751,
+      "inverse_ess_fraction": 4.31128939176048e-113,
+      "likelihood_call_fraction": 1.7997879849753698e-06,
+      "bound_draws": 26995,
+      "streamed": {
+        "finite_calls": 64,
+        "max_log_likelihood": 1031.959257003284,
+        "log_evidence": 1009.3539902802585,
+        "effective_samples": 1.000005426470751,
+        "log_evidence_delta": -1.1368683772161603e-13,
+        "relative_ess_delta": 0.0
+      }
+    },
+    {
+      "shell": 24,
+      "stored_calls": 15983,
+      "exploration_membership": 15919,
+      "estimator_calls": 64,
+      "dataset_estimator_rows": 64,
+      "log_volume": -19.16568385829685,
+      "log_likelihood_threshold": 1013.60921401922,
+      "log_evidence": 1054.7585102375658,
+      "posterior_mass": 4.861235079093656e-39,
+      "effective_samples": 1.000000304292872,
+      "inverse_ess_fraction": 1.1816105008994404e-73,
+      "likelihood_call_fraction": 1.7997879849753698e-06,
+      "bound_draws": 28705,
+      "streamed": {
+        "finite_calls": 64,
+        "max_log_likelihood": 1078.083077027076,
+        "log_evidence": 1054.7585102375658,
+        "effective_samples": 1.000000304292872,
+        "log_evidence_delta": 0.0,
+        "relative_ess_delta": 0.0
+      }
+    },
+    {
+      "shell": 25,
+      "stored_calls": 19710,
+      "exploration_membership": 19646,
+      "estimator_calls": 64,
+      "dataset_estimator_rows": 64,
+      "log_volume": -19.763683925261642,
+      "log_likelihood_threshold": 1035.4894890688079,
+      "log_evidence": 1055.6491610990047,
+      "posterior_mass": 1.1845444917871686e-38,
+      "effective_samples": 1.0000000162881408,
+      "inverse_ess_fraction": 7.015909459281151e-73,
+      "likelihood_call_fraction": 1.7997879849753698e-06,
+      "bound_draws": 32999,
+      "streamed": {
+        "finite_calls": 64,
+        "max_log_likelihood": 1079.5717280994818,
+        "log_evidence": 1055.6491610990047,
+        "effective_samples": 1.0000000162881408,
+        "log_evidence_delta": 0.0,
+        "relative_ess_delta": 0.0
+      }
+    },
+    {
+      "shell": 26,
+      "stored_calls": 18689,
+      "exploration_membership": 18625,
+      "estimator_calls": 64,
+      "dataset_estimator_rows": 64,
+      "log_volume": -20.9296956001408,
+      "log_likelihood_threshold": 1053.2032898846078,
+      "log_evidence": 1074.4263816970981,
+      "posterior_mass": 1.6919778324564157e-30,
+      "effective_samples": 1.000000099459617,
+      "inverse_ess_fraction": 1.431431342119167e-56,
+      "likelihood_call_fraction": 1.7997879849753698e-06,
+      "bound_draws": 32893,
+      "streamed": {
+        "finite_calls": 64,
+        "max_log_likelihood": 1099.5149603308687,
+        "log_evidence": 1074.4263816970981,
+        "effective_samples": 1.000000099459617,
+        "log_evidence_delta": 0.0,
+        "relative_ess_delta": 0.0
+      }
+    },
+    {
+      "shell": 27,
+      "stored_calls": 20396,
+      "exploration_membership": 20332,
+      "estimator_calls": 64,
+      "dataset_estimator_rows": 64,
+      "log_volume": -21.686551183009023,
+      "log_likelihood_threshold": 1068.5651514802075,
+      "log_evidence": 1116.974274349197,
+      "posterior_mass": 5.0899048553350495e-12,
+      "effective_samples": 1.000000000001819,
+      "inverse_ess_fraction": 1.2953900478957353e-19,
+      "likelihood_call_fraction": 1.7997879849753698e-06,
+      "bound_draws": 34652,
+      "streamed": {
+        "finite_calls": 64,
+        "max_log_likelihood": 1142.8197086155647,
+        "log_evidence": 1116.974274349197,
+        "effective_samples": 1.000000000001819,
+        "log_evidence_delta": 0.0,
+        "relative_ess_delta": 0.0
+      }
+    },
+    {
+      "shell": 28,
+      "stored_calls": 19900,
+      "exploration_membership": 19836,
+      "estimator_calls": 64,
+      "dataset_estimator_rows": 64,
+      "log_volume": -22.47924719931148,
+      "log_likelihood_threshold": 1082.0158834781323,
+      "log_evidence": 1089.4100504603127,
+      "posterior_mass": 5.4415087434607375e-24,
+      "effective_samples": 1.0021325169551358,
+      "inverse_ess_fraction": 1.4773885748625279e-43,
+      "likelihood_call_fraction": 1.7997879849753698e-06,
+      "bound_draws": 35434,
+      "streamed": {
+        "finite_calls": 64,
+        "max_log_likelihood": 1116.0471150542644,
+        "log_evidence": 1089.4100504603127,
+        "effective_samples": 1.0021325169551358,
+        "log_evidence_delta": 0.0,
+        "relative_ess_delta": 0.0
+      }
+    },
+    {
+      "shell": 29,
+      "stored_calls": 25020,
+      "exploration_membership": 24956,
+      "estimator_calls": 64,
+      "dataset_estimator_rows": 64,
+      "log_volume": -23.2521520988856,
+      "log_likelihood_threshold": 1094.5881821459989,
+      "log_evidence": 1098.7620580090677,
+      "posterior_mass": 6.269668871844624e-20,
+      "effective_samples": 1.4082606111279137,
+      "inverse_ess_fraction": 1.395684978809608e-35,
+      "likelihood_call_fraction": 1.7997879849753698e-06,
+      "bound_draws": 40148,
+      "streamed": {
+        "finite_calls": 64,
+        "max_log_likelihood": 1125.9796431060906,
+        "log_evidence": 1098.7620580090677,
+        "effective_samples": 1.4082606111279137,
+        "log_evidence_delta": 0.0,
+        "relative_ess_delta": 0.0
+      }
+    },
+    {
+      "shell": 30,
+      "stored_calls": 19499,
+      "exploration_membership": 19435,
+      "estimator_calls": 64,
+      "dataset_estimator_rows": 64,
+      "log_volume": -24.225123299132342,
+      "log_likelihood_threshold": 1105.5530496287242,
+      "log_evidence": 1084.0515871317664,
+      "posterior_mass": 2.5619359992997197e-26,
+      "effective_samples": 1.2974612678726658,
+      "inverse_ess_fraction": 2.5294341530239548e-48,
+      "likelihood_call_fraction": 1.7997879849753698e-06,
+      "bound_draws": 35801,
+      "streamed": {
+        "finite_calls": 64,
+        "max_log_likelihood": 1112.2993062876217,
+        "log_evidence": 1084.0515871317664,
+        "effective_samples": 1.2974612678726658,
+        "log_evidence_delta": 0.0,
+        "relative_ess_delta": 0.0
+      }
+    },
+    {
+      "shell": 31,
+      "stored_calls": 26318,
+      "exploration_membership": 26254,
+      "estimator_calls": 64,
+      "dataset_estimator_rows": 64,
+      "log_volume": -24.880528578483485,
+      "log_likelihood_threshold": 1115.5383593296094,
+      "log_evidence": 1111.9024304856546,
+      "posterior_mass": 3.191801402419409e-14,
+      "effective_samples": 1.000062784714376,
+      "inverse_ess_fraction": 5.0936099351305166e-24,
+      "likelihood_call_fraction": 1.7997879849753698e-06,
+      "bound_draws": 42820,
+      "streamed": {
+        "finite_calls": 64,
+        "max_log_likelihood": 1140.941810755779,
+        "log_evidence": 1111.9024304856546,
+        "effective_samples": 1.000062784714376,
+        "log_evidence_delta": 0.0,
+        "relative_ess_delta": 0.0
+      }
+    },
+    {
+      "shell": 32,
+      "stored_calls": 24018,
+      "exploration_membership": 23954,
+      "estimator_calls": 64,
+      "dataset_estimator_rows": 64,
+      "log_volume": -25.670554230792398,
+      "log_likelihood_threshold": 1124.588022749644,
+      "log_evidence": 1116.8257647617322,
+      "posterior_mass": 4.3874559570148305e-12,
+      "effective_samples": 1.0012175212892676,
+      "inverse_ess_fraction": 9.613429070054704e-20,
+      "likelihood_call_fraction": 1.7997879849753698e-06,
+      "bound_draws": 40350,
+      "streamed": {
+        "finite_calls": 64,
+        "max_log_likelihood": 1146.654593525895,
+        "log_evidence": 1116.8257647617322,
+        "effective_samples": 1.0012175212892676,
+        "log_evidence_delta": 0.0,
+        "relative_ess_delta": 0.0
+      }
+    },
+    {
+      "shell": 33,
+      "stored_calls": 23252,
+      "exploration_membership": 23188,
+      "estimator_calls": 64,
+      "dataset_estimator_rows": 64,
+      "log_volume": -26.837814285220055,
+      "log_likelihood_threshold": 1132.3699703100192,
+      "log_evidence": 1109.792651157793,
+      "posterior_mass": 3.870529136593721e-15,
+      "effective_samples": 1.8723667817375398,
+      "inverse_ess_fraction": 4.0006539048067627e-26,
+      "likelihood_call_fraction": 1.7997879849753698e-06,
+      "bound_draws": 40089,
+      "streamed": {
+        "finite_calls": 64,
+        "max_log_likelihood": 1140.353631798218,
+        "log_evidence": 1109.792651157793,
+        "effective_samples": 1.8723667817375398,
+        "log_evidence_delta": 0.0,
+        "relative_ess_delta": 0.0
+      }
+    },
+    {
+      "shell": 34,
+      "stored_calls": 24070,
+      "exploration_membership": 24006,
+      "estimator_calls": 64,
+      "dataset_estimator_rows": 64,
+      "log_volume": -27.51885457604275,
+      "log_likelihood_threshold": 1139.319539500335,
+      "log_evidence": 1118.156030015108,
+      "posterior_mass": 1.6593562249217598e-11,
+      "effective_samples": 2.1250525508009357,
+      "inverse_ess_fraction": 6.478743874540634e-19,
+      "likelihood_call_fraction": 1.7997879849753698e-06,
+      "bound_draws": 40897,
+      "streamed": {
+        "finite_calls": 64,
+        "max_log_likelihood": 1149.306329544952,
+        "log_evidence": 1118.156030015108,
+        "effective_samples": 2.1250525508009357,
+        "log_evidence_delta": 0.0,
+        "relative_ess_delta": 0.0
+      }
+    },
+    {
+      "shell": 35,
+      "stored_calls": 24325,
+      "exploration_membership": 24261,
+      "estimator_calls": 64,
+      "dataset_estimator_rows": 64,
+      "log_volume": -28.24067599506677,
+      "log_likelihood_threshold": 1145.2571711618202,
+      "log_evidence": 1122.602663305654,
+      "posterior_mass": 1.416080459579308e-09,
+      "effective_samples": 1.2271244054753396,
+      "inverse_ess_fraction": 8.170873637116155e-15,
+      "likelihood_call_fraction": 1.7997879849753698e-06,
+      "bound_draws": 42584,
+      "streamed": {
+        "finite_calls": 64,
+        "max_log_likelihood": 1154.8967931794537,
+        "log_evidence": 1122.602663305654,
+        "effective_samples": 1.2271244054753396,
+        "log_evidence_delta": 0.0,
+        "relative_ess_delta": 0.0
+      }
+    },
+    {
+      "shell": 36,
+      "stored_calls": 25991,
+      "exploration_membership": 25927,
+      "estimator_calls": 64,
+      "dataset_estimator_rows": 64,
+      "log_volume": -28.982832698528686,
+      "log_likelihood_threshold": 1150.4181969339568,
+      "log_evidence": 1124.6677406327524,
+      "posterior_mass": 1.1167079755319946e-08,
+      "effective_samples": 2.070392827018185,
+      "inverse_ess_fraction": 3.011672262590974e-13,
+      "likelihood_call_fraction": 1.7997879849753698e-06,
+      "bound_draws": 44796,
+      "streamed": {
+        "finite_calls": 64,
+        "max_log_likelihood": 1157.3853390372503,
+        "log_evidence": 1124.6677406327524,
+        "effective_samples": 2.070392827018185,
+        "log_evidence_delta": 0.0,
+        "relative_ess_delta": 0.0
+      }
+    },
+    {
+      "shell": 37,
+      "stored_calls": 26025,
+      "exploration_membership": 25449,
+      "estimator_calls": 576,
+      "dataset_estimator_rows": 576,
+      "log_volume": -29.908660694464988,
+      "log_likelihood_threshold": 1155.0666068583514,
+      "log_evidence": 1132.4128535325917,
+      "posterior_mass": 2.579879443085626e-05,
+      "effective_samples": 1.272517536687398,
+      "inverse_ess_fraction": 2.615268456094088e-06,
+      "likelihood_call_fraction": 1.619809186477833e-05,
+      "bound_draws": 46474,
+      "streamed": {
+        "finite_calls": 576,
+        "max_log_likelihood": 1168.5501457344594,
+        "log_evidence": 1132.4128535325917,
+        "effective_samples": 1.272517536687398,
+        "log_evidence_delta": 0.0,
+        "relative_ess_delta": 0.0
+      }
+    },
+    {
+      "shell": 38,
+      "stored_calls": 29879,
+      "exploration_membership": 29303,
+      "estimator_calls": 576,
+      "dataset_estimator_rows": 576,
+      "log_volume": -30.611625321884404,
+      "log_likelihood_threshold": 1159.0328943724337,
+      "log_evidence": 1133.078953648894,
+      "posterior_mass": 5.0220729497121744e-05,
+      "effective_samples": 3.5476031537161656,
+      "inverse_ess_fraction": 3.5547759169764292e-06,
+      "likelihood_call_fraction": 1.619809186477833e-05,
+      "bound_draws": 51493,
+      "streamed": {
+        "finite_calls": 576,
+        "max_log_likelihood": 1169.2481331448294,
+        "log_evidence": 1133.078953648894,
+        "effective_samples": 3.5476031537161656,
+        "log_evidence_delta": 0.0,
+        "relative_ess_delta": 0.0
+      }
+    },
+    {
+      "shell": 39,
+      "stored_calls": 12489041,
+      "exploration_membership": 29969,
+      "estimator_calls": 12459072,
+      "dataset_estimator_rows": 12459072,
+      "log_volume": -31.444633819662386,
+      "log_likelihood_threshold": 1162.4208509179027,
+      "log_evidence": 1140.0063147616036,
+      "posterior_mass": 0.05121506430000266,
+      "effective_samples": 36.05913195055086,
+      "inverse_ess_fraction": 0.3637151611081271,
+      "likelihood_call_fraction": 0.3503701263991102,
+      "bound_draws": 20595345,
+      "streamed": {
+        "finite_calls": 12459072,
+        "max_log_likelihood": 1185.553566386343,
+        "log_evidence": 1140.0063147616038,
+        "effective_samples": 36.059131950567256,
+        "log_evidence_delta": 2.2737367544323206e-13,
+        "relative_ess_delta": 4.547473508864641e-13
+      }
+    },
+    {
+      "shell": 40,
+      "stored_calls": 36404,
+      "exploration_membership": 35828,
+      "estimator_calls": 576,
+      "dataset_estimator_rows": 576,
+      "log_volume": -32.22950928975904,
+      "log_likelihood_threshold": 1165.4280183165226,
+      "log_evidence": 1133.6516943106685,
+      "posterior_mass": 8.904737588572458e-05,
+      "effective_samples": 6.09728884800847,
+      "inverse_ess_fraction": 6.502595064213079e-06,
+      "likelihood_call_fraction": 1.619809186477833e-05,
+      "bound_draws": 56044,
+      "streamed": {
+        "finite_calls": 576,
+        "max_log_likelihood": 1170.9285147382163,
+        "log_evidence": 1133.6516943106685,
+        "effective_samples": 6.09728884800847,
+        "log_evidence_delta": 0.0,
+        "relative_ess_delta": 0.0
+      }
+    },
+    {
+      "shell": 41,
+      "stored_calls": 2393476,
+      "exploration_membership": 29508,
+      "estimator_calls": 2363968,
+      "dataset_estimator_rows": 2363968,
+      "log_volume": -33.23516085957952,
+      "log_likelihood_threshold": 1168.1319693204903,
+      "log_evidence": 1139.577392823036,
+      "posterior_mass": 0.03335180103034139,
+      "effective_samples": 80.63901759946464,
+      "inverse_ess_fraction": 0.06897227989047994,
+      "likelihood_call_fraction": 0.06647876880103523,
+      "bound_draws": 3972099,
+      "streamed": {
+        "finite_calls": 2363968,
+        "max_log_likelihood": 1184.50281043511,
+        "log_evidence": 1139.5773928230362,
+        "effective_samples": 80.63901759953798,
+        "log_evidence_delta": 2.2737367544323206e-13,
+        "relative_ess_delta": 9.094947017729282e-13
+      }
+    },
+    {
+      "shell": 42,
+      "stored_calls": 10205996,
+      "exploration_membership": 29420,
+      "estimator_calls": 10176576,
+      "dataset_estimator_rows": 10176576,
+      "log_volume": -34.04196985629263,
+      "log_likelihood_threshold": 1170.4139346142165,
+      "log_evidence": 1139.779004862792,
+      "posterior_mass": 0.040801702748358176,
+      "effective_samples": 28.020739861098132,
+      "inverse_ess_fraction": 0.2970695953304233,
+      "likelihood_call_fraction": 0.2861824877029486,
+      "bound_draws": 16685706,
+      "streamed": {
+        "finite_calls": 10176576,
+        "max_log_likelihood": 1188.2724703954298,
+        "log_evidence": 1139.7790048627917,
+        "effective_samples": 28.02073986113636,
+        "log_evidence_delta": -2.2737367544323206e-13,
+        "relative_ess_delta": 1.3642420526593924e-12
+      }
+    },
+    {
+      "shell": 43,
+      "stored_calls": 1253311,
+      "exploration_membership": 26495,
+      "estimator_calls": 1226816,
+      "dataset_estimator_rows": 1226816,
+      "log_volume": -34.97763170283875,
+      "log_likelihood_threshold": 1172.4414695890391,
+      "log_evidence": 1139.6387201360233,
+      "posterior_mass": 0.03546119811268424,
+      "effective_samples": 175.71090638325532,
+      "inverse_ess_fraction": 0.03578403569619162,
+      "likelihood_call_fraction": 0.034500135883992866,
+      "bound_draws": 2188519,
+      "streamed": {
+        "finite_calls": 1226816,
+        "max_log_likelihood": 1185.3721963001822,
+        "log_evidence": 1139.6387201360235,
+        "effective_samples": 175.71090638333524,
+        "log_evidence_delta": 2.2737367544323206e-13,
+        "relative_ess_delta": 4.547473508864641e-13
+      }
+    },
+    {
+      "shell": 44,
+      "stored_calls": 3699429,
+      "exploration_membership": 29861,
+      "estimator_calls": 3669568,
+      "dataset_estimator_rows": 3669568,
+      "log_volume": -35.689641828835775,
+      "log_likelihood_threshold": 1174.3315080393413,
+      "log_evidence": 1140.0812590127928,
+      "posterior_mass": 0.055200828629177634,
+      "effective_samples": 142.22183325569605,
+      "inverse_ess_fraction": 0.10712877759463792,
+      "likelihood_call_fraction": 0.10319444369453279,
+      "bound_draws": 6105627,
+      "streamed": {
+        "finite_calls": 3669568,
+        "max_log_likelihood": 1188.287367358662,
+        "log_evidence": 1140.0812590127932,
+        "effective_samples": 142.22183325569605,
+        "log_evidence_delta": 4.547473508864641e-13,
+        "relative_ess_delta": 0.0
+      }
+    },
+    {
+      "shell": 45,
+      "stored_calls": 1191378,
+      "exploration_membership": 26514,
+      "estimator_calls": 1164864,
+      "dataset_estimator_rows": 1164864,
+      "log_volume": -36.65916822655527,
+      "log_likelihood_threshold": 1176.007231074408,
+      "log_evidence": 1139.991839393483,
+      "posterior_mass": 0.050479047301247616,
+      "effective_samples": 374.90819100380924,
+      "inverse_ess_fraction": 0.03398432108679138,
+      "likelihood_call_fraction": 0.032757941114536705,
+      "bound_draws": 2083029,
+      "streamed": {
+        "finite_calls": 1164864,
+        "max_log_likelihood": 1187.1961476107608,
+        "log_evidence": 1139.9918393934827,
+        "effective_samples": 374.90819100380924,
+        "log_evidence_delta": -2.2737367544323206e-13,
+        "relative_ess_delta": 0.0
+      }
+    },
+    {
+      "shell": 46,
+      "stored_calls": 862180,
+      "exploration_membership": 32164,
+      "estimator_calls": 830016,
+      "dataset_estimator_rows": 830016,
+      "log_volume": -37.32869263421126,
+      "log_likelihood_threshold": 1177.5435603705246,
+      "log_evidence": 1140.26068611371,
+      "posterior_mass": 0.06604953993148503,
+      "effective_samples": 900.3902338105038,
+      "inverse_ess_fraction": 0.024226464832198244,
+      "likelihood_call_fraction": 0.02334145037714557,
+      "bound_draws": 1406530,
+      "streamed": {
+        "finite_calls": 830016,
+        "max_log_likelihood": 1187.2441640635302,
+        "log_evidence": 1140.2606861137099,
+        "effective_samples": 900.3902338096848,
+        "log_evidence_delta": -2.2737367544323206e-13,
+        "relative_ess_delta": -9.096057240753908e-13
+      }
+    },
+    {
+      "shell": 47,
+      "stored_calls": 652053,
+      "exploration_membership": 26325,
+      "estimator_calls": 625728,
+      "dataset_estimator_rows": 625728,
+      "log_volume": -38.39510519910986,
+      "log_likelihood_threshold": 1178.8900829338966,
+      "log_evidence": 1140.3833438754825,
+      "posterior_mass": 0.07466883681553053,
+      "effective_samples": 1528.4333376016257,
+      "inverse_ess_fraction": 0.018239523899943013,
+      "likelihood_call_fraction": 0.01759652712910419,
+      "bound_draws": 1176174,
+      "streamed": {
+        "finite_calls": 625728,
+        "max_log_likelihood": 1187.4315824313019,
+        "log_evidence": 1140.3833438754823,
+        "effective_samples": 1528.4333376009306,
+        "log_evidence_delta": -2.2737367544323206e-13,
+        "relative_ess_delta": -4.547473508864641e-13
+      }
+    },
+    {
+      "shell": 48,
+      "stored_calls": 573128,
+      "exploration_membership": 40584,
+      "estimator_calls": 532544,
+      "dataset_estimator_rows": 532544,
+      "log_volume": -38.82292755720265,
+      "log_likelihood_threshold": 1180.1293223852422,
+      "log_evidence": 1140.5509381317945,
+      "posterior_mass": 0.08829266928161607,
+      "effective_samples": 2510.0375349838982,
+      "inverse_ess_fraction": 0.01552924369232496,
+      "likelihood_call_fraction": 0.014976035822980053,
+      "bound_draws": 844643,
+      "streamed": {
+        "finite_calls": 532544,
+        "max_log_likelihood": 1187.4026099593339,
+        "log_evidence": 1140.5509381317945,
+        "effective_samples": 2510.0375349838982,
+        "log_evidence_delta": 0.0,
+        "relative_ess_delta": 0.0
+      }
+    },
+    {
+      "shell": 49,
+      "stored_calls": 361695,
+      "exploration_membership": 29343,
+      "estimator_calls": 332352,
+      "dataset_estimator_rows": 332352,
+      "log_volume": -40.02978953932983,
+      "log_likelihood_threshold": 1181.1987211321975,
+      "log_evidence": 1140.4426716552848,
+      "posterior_mass": 0.0792328200109538,
+      "effective_samples": 3246.598661696234,
+      "inverse_ess_fraction": 0.009668583431704202,
+      "likelihood_call_fraction": 0.009346299005977096,
+      "bound_draws": 611900,
+      "streamed": {
+        "finite_calls": 332352,
+        "max_log_likelihood": 1187.8946753010937,
+        "log_evidence": 1140.4426716552848,
+        "effective_samples": 3246.598661696234,
+        "log_evidence_delta": 0.0,
+        "relative_ess_delta": 0.0
+      }
+    },
+    {
+      "shell": 50,
+      "stored_calls": 380620,
+      "exploration_membership": 31884,
+      "estimator_calls": 348736,
+      "dataset_estimator_rows": 348736,
+      "log_volume": -40.796149327194826,
+      "log_likelihood_threshold": 1182.159909029912,
+      "log_evidence": 1140.5521235474348,
+      "posterior_mass": 0.08839739485210689,
+      "effective_samples": 3839.949124529963,
+      "inverse_ess_fraction": 0.010175006366071477,
+      "likelihood_call_fraction": 0.00980704473013079,
+      "bound_draws": 619568,
+      "streamed": {
+        "finite_calls": 348736,
+        "max_log_likelihood": 1189.1934483806172,
+        "log_evidence": 1140.5521235474348,
+        "effective_samples": 3839.949124529963,
+        "log_evidence_delta": 0.0,
+        "relative_ess_delta": 0.0
+      }
+    },
+    {
+      "shell": 51,
+      "stored_calls": 257525,
+      "exploration_membership": 30645,
+      "estimator_calls": 226880,
+      "dataset_estimator_rows": 226880,
+      "log_volume": -41.71068007551259,
+      "log_likelihood_threshold": 1183.0142259787826,
+      "log_evidence": 1140.4143537107489,
+      "posterior_mass": 0.07702058028148297,
+      "effective_samples": 4498.696449935302,
+      "inverse_ess_fraction": 0.006593380058872375,
+      "likelihood_call_fraction": 0.006380248406737686,
+      "bound_draws": 425171,
+      "streamed": {
+        "finite_calls": 226880,
+        "max_log_likelihood": 1189.459079649424,
+        "log_evidence": 1140.4143537107489,
+        "effective_samples": 4498.696449937348,
+        "log_evidence_delta": 0.0,
+        "relative_ess_delta": 4.549693954913892e-13
+      }
+    },
+    {
+      "shell": 52,
+      "stored_calls": 148613,
+      "exploration_membership": 30277,
+      "estimator_calls": 118336,
+      "dataset_estimator_rows": 118336,
+      "log_volume": -42.593335746698024,
+      "log_likelihood_threshold": 1183.7990307331056,
+      "log_evidence": 1140.2267813316587,
+      "posterior_mass": 0.06384768234809822,
+      "effective_samples": 5924.314924723106,
+      "inverse_ess_fraction": 0.003440593505970808,
+      "likelihood_call_fraction": 0.003327807984219459,
+      "bound_draws": 247240,
+      "streamed": {
+        "finite_calls": 118336,
+        "max_log_likelihood": 1189.6313171089937,
+        "log_evidence": 1140.226781331659,
+        "effective_samples": 5924.3149247258,
+        "log_evidence_delta": 2.2737367544323206e-13,
+        "relative_ess_delta": 4.547473508864641e-13
+      }
+    },
+    {
+      "shell": 53,
+      "stored_calls": 127666,
+      "exploration_membership": 36978,
+      "estimator_calls": 90688,
+      "dataset_estimator_rows": 90688,
+      "log_volume": -43.23978127230792,
+      "log_likelihood_threshold": 1184.5117852570058,
+      "log_evidence": 1140.4536369004204,
+      "posterior_mass": 0.08010640810587477,
+      "effective_samples": 12159.677766688737,
+      "inverse_ess_fraction": 0.002638722250343694,
+      "likelihood_call_fraction": 0.002550299574710099,
+      "bound_draws": 175392,
+      "streamed": {
+        "finite_calls": 90688,
+        "max_log_likelihood": 1188.4689777694261,
+        "log_evidence": 1140.4536369004204,
+        "effective_samples": 12159.677766688737,
+        "log_evidence_delta": 0.0,
+        "relative_ess_delta": 0.0
+      }
+    },
+    {
+      "shell": 54,
+      "stored_calls": 55261,
+      "exploration_membership": 23453,
+      "estimator_calls": 31808,
+      "dataset_estimator_rows": 31808,
+      "log_volume": -44.82589717911939,
+      "log_likelihood_threshold": 1185.1529911810746,
+      "log_evidence": 1139.4542645507224,
+      "posterior_mass": 0.0294880029951174,
+      "effective_samples": 4732.409959108934,
+      "inverse_ess_fraction": 0.000918733583794199,
+      "likelihood_call_fraction": 0.0008944946285327588,
+      "bound_draws": 94344,
+      "streamed": {
+        "finite_calls": 31808,
+        "max_log_likelihood": 1189.158041890836,
+        "log_evidence": 1139.4542645507224,
+        "effective_samples": 4732.409959108934,
+        "log_evidence_delta": 0.0,
+        "relative_ess_delta": 0.0
+      }
+    },
+    {
+      "shell": 55,
+      "stored_calls": 69655,
+      "exploration_membership": 48087,
+      "estimator_calls": 21568,
+      "dataset_estimator_rows": 21568,
+      "log_volume": -45.118304166544384,
+      "log_likelihood_threshold": 1185.7483965180115,
+      "log_evidence": 1138.8324984064745,
+      "posterior_mass": 0.01583491573046648,
+      "effective_samples": 2104.9051929916823,
+      "inverse_ess_fraction": 0.0005956349888162921,
+      "likelihood_call_fraction": 0.0006065285509366996,
+      "bound_draws": 94243,
+      "streamed": {
+        "finite_calls": 21568,
+        "max_log_likelihood": 1188.4298520114087,
+        "log_evidence": 1138.8324984064745,
+        "effective_samples": 2104.9051929916823,
+        "log_evidence_delta": 0.0,
+        "relative_ess_delta": 0.0
+      }
+    },
+    {
+      "shell": 56,
+      "stored_calls": 47339,
+      "exploration_membership": 31403,
+      "estimator_calls": 15936,
+      "dataset_estimator_rows": 15936,
+      "log_volume": -46.193569876463656,
+      "log_likelihood_threshold": 1186.315959897432,
+      "log_evidence": 1139.0802976064267,
+      "posterior_mass": 0.02028773585089756,
+      "effective_samples": 4665.045776355105,
+      "inverse_ess_fraction": 0.00044115629569715605,
+      "likelihood_call_fraction": 0.0004481472082588671,
+      "bound_draws": 77851,
+      "streamed": {
+        "finite_calls": 15936,
+        "max_log_likelihood": 1189.0576523679092,
+        "log_evidence": 1139.0802976064267,
+        "effective_samples": 4665.045776355105,
+        "log_evidence_delta": 0.0,
+        "relative_ess_delta": 0.0
+      }
+    },
+    {
+      "shell": 57,
+      "stored_calls": 46652,
+      "exploration_membership": 34300,
+      "estimator_calls": 12352,
+      "dataset_estimator_rows": 12352,
+      "log_volume": -46.871072945078225,
+      "log_likelihood_threshold": 1186.816677196025,
+      "log_evidence": 1138.9633382166,
+      "posterior_mass": 0.01804840234963449,
+      "effective_samples": 4756.404435863869,
+      "inverse_ess_fraction": 0.00034243644546595053,
+      "likelihood_call_fraction": 0.0003473590811002464,
+      "bound_draws": 73312,
+      "streamed": {
+        "finite_calls": 12352,
+        "max_log_likelihood": 1189.5988139553956,
+        "log_evidence": 1138.9633382166,
+        "effective_samples": 4756.404435863869,
+        "log_evidence_delta": 0.0,
+        "relative_ess_delta": 0.0
+      }
+    },
+    {
+      "shell": 58,
+      "stored_calls": 37798,
+      "exploration_membership": 30054,
+      "estimator_calls": 7744,
+      "dataset_estimator_rows": 7744,
+      "log_volume": -47.81447670043496,
+      "log_likelihood_threshold": 1187.254451190864,
+      "log_evidence": 1138.55773839588,
+      "posterior_mass": 0.012030647443982504,
+      "effective_samples": 3650.0205724473344,
+      "inverse_ess_fraction": 0.00019827315421029303,
+      "likelihood_call_fraction": 0.00021777434618201977,
+      "bound_draws": 61425,
+      "streamed": {
+        "finite_calls": 7744,
+        "max_log_likelihood": 1189.1553417121881,
+        "log_evidence": 1138.55773839588,
+        "effective_samples": 3650.0205724473344,
+        "log_evidence_delta": 0.0,
+        "relative_ess_delta": 0.0
+      }
+    },
+    {
+      "shell": 59,
+      "stored_calls": 31671,
+      "exploration_membership": 26999,
+      "estimator_calls": 4672,
+      "dataset_estimator_rows": 4672,
+      "log_volume": -48.74963610794726,
+      "log_likelihood_threshold": 1187.6561390551055,
+      "log_evidence": 1138.1288119158742,
+      "posterior_mass": 0.007834451505281354,
+      "effective_samples": 2470.7220798317117,
+      "inverse_ess_fraction": 0.00012421513756266376,
+      "likelihood_call_fraction": 0.000131384522903202,
+      "bound_draws": 53355,
+      "streamed": {
+        "finite_calls": 4672,
+        "max_log_likelihood": 1189.3235356398834,
+        "log_evidence": 1138.1288119158742,
+        "effective_samples": 2470.7220798317117,
+        "log_evidence_delta": 0.0,
+        "relative_ess_delta": 0.0
+      }
+    },
+    {
+      "shell": 60,
+      "stored_calls": 46364,
+      "exploration_membership": 38620,
+      "estimator_calls": 7744,
+      "dataset_estimator_rows": 7744,
+      "log_volume": -49.05127941474744,
+      "log_likelihood_threshold": 1188.0205831530966,
+      "log_evidence": 1138.5705023992464,
+      "posterior_mass": 0.012185190866664251,
+      "effective_samples": 3690.12982256441,
+      "inverse_ess_fraction": 0.00020118901062685766,
+      "likelihood_call_fraction": 0.00021777434618201977,
+      "bound_draws": 46364,
+      "streamed": {
+        "finite_calls": 7744,
+        "max_log_likelihood": 1190.323833239404,
+        "log_evidence": 1138.5705023992464,
+        "effective_samples": 3690.12982256441,
+        "log_evidence_delta": 0.0,
+        "relative_ess_delta": 0.0
+      }
+    }
+  ],
+  "caveats": [
+    "ESS and evidence do not by themselves establish posterior accuracy.",
+    "Exploration memberships are final shell assignments, not chronological evaluations.",
+    "The checkpoint is identified by path, size, and mtime, not a full-file hash."
+  ],
+  "streamed_summary": {
+    "log_evidence": 1142.9780363272064,
+    "effective_samples": 5000.129215697718,
+    "log_evidence_delta": 0.0,
+    "relative_ess_delta": 5.544453784978032e-13
+  },
+  "setup_file": {
+    "path": "/scratch/midway3/tfairnington/time_shift/wasp94_eq_guillot/results/setup.json",
+    "size_bytes": 2162,
+    "mtime_ns": 1792699541696373000,
+    "sha256": "43c37531e7706d18904f9925e1b83a94b8bdc26762edc1512317b51ee20ec221"
+  },
+  "setup": {
+    "data": "/scratch/midway3/tfairnington/time_shift/wasp94_delta_preview",
+    "archive": "/project/ekempton/tfairnington/JWST/03_trexolists_extended_with_nasa_ps_filled.csv",
+    "archive_columns": [
+      "st_rad",
+      "pl_massj"
+    ],
+    "ranges": {
+      "soss_o1": [
+        0,
+        114
+      ],
+      "g395h_nrs1": [
+        114,
+        183
+      ],
+      "g395h_nrs2": [
+        183,
+        336
+      ]
+    },
+    "smoke": false,
+    "opacity_downsample": 1,
+    "parameter_names": [
+      "sector1.beta",
+      "sector1.log_gamma",
+      "sector1.log_scatt_factor",
+      "sector1.scatt_slope",
+      "sector1.log_cloudtop_P",
+      "sector1.cloud_fraction",
+      "sector2.beta",
+      "sector2.log_gamma",
+      "sector2.log_scatt_factor",
+      "sector2.scatt_slope",
+      "sector2.log_cloudtop_P",
+      "sector2.cloud_fraction",
+      "log_k_th",
+      "T_int",
+      "log_P_quench",
+      "logZ",
+      "CO_ratio",
+      "Rp",
+      "offset_nrs1",
+      "offset_nrs2",
+      "t0_soss",
+      "t0_g395h"
+    ],
+    "priors": {
+      "sector1.beta": [
+        0.1854065803543671,
+        1.8540658035436712
+      ],
+      "sector1.log_gamma": [
+        -2,
+        0.5
+      ],
+      "sector1.log_scatt_factor": [
+        -4,
+        10
+      ],
+      "sector1.scatt_slope": [
+        -2,
+        20
+      ],
+      "sector1.log_cloudtop_P": [
+        -1,
+        6
+      ],
+      "sector1.cloud_fraction": [
+        0,
+        1
+      ],
+      "sector2.beta": [
+        0.1854065803543671,
+        1.8540658035436712
+      ],
+      "sector2.log_gamma": [
+        -2,
+        0.5
+      ],
+      "sector2.log_scatt_factor": [
+        -4,
+        10
+      ],
+      "sector2.scatt_slope": [
+        -2,
+        20
+      ],
+      "sector2.log_cloudtop_P": [
+        -1,
+        6
+      ],
+      "sector2.cloud_fraction": [
+        0,
+        1
+      ],
+      "log_k_th": [
+        -3,
+        -0.5
+      ],
+      "T_int": [
+        30,
+        630
+      ],
+      "log_P_quench": [
+        -3,
+        7
+      ],
+      "logZ": [
+        -1,
+        3
+      ],
+      "CO_ratio": [
+        0.1,
+        2
+      ],
+      "Rp": [
+        92939600.0,
+        135834800.0
+      ],
+      "offset_nrs1": [
+        -0.001,
+        0.001
+      ],
+      "offset_nrs2": [
+        -0.001,
+        0.001
+      ],
+      "t0_soss": [
+        -100,
+        100
+      ],
+      "t0_g395h": [
+        -100,
+        100
+      ]
+    }
+  },
+  "source_files": [
+    {
+      "path": "/scratch/midway3/tfairnington/time_shift/wasp94_eq_guillot/run_retrieval.py",
+      "size_bytes": 17254,
+      "mtime_ns": 1793108749873955078,
+      "sha256": "bab897d40c0110c2eaedec0ec8dec5433758653326f4e15d1ada742363ac1fbb"
+    },
+    {
+      "path": "/scratch/midway3/tfairnington/time_shift/wasp94_eq_guillot/run.sbatch",
+      "size_bytes": 1596,
+      "mtime_ns": 1792950789067661015,
+      "sha256": "ed559e68d3391cdc114511d547860a676f59cdf63063554a4e455d9f840e2d97"
+    },
+    {
+      "path": "/scratch/midway3/tfairnington/time_shift/wasp94_delta_preview/soss_o1.csv",
+      "size_bytes": 57698,
+      "mtime_ns": 1792202279000000000,
+      "sha256": "31c66ac46c54e35811fd4fc7c8ce3c2eccfacd2e2950abb6380262f0414911b2"
+    },
+    {
+      "path": "/scratch/midway3/tfairnington/time_shift/wasp94_delta_preview/g395h_nrs1.csv",
+      "size_bytes": 34971,
+      "mtime_ns": 1792203856000000000,
+      "sha256": "b75e69c1a90823506f64dd242dcb61ea470570e94447c19abd5f7884548b368f"
+    },
+    {
+      "path": "/scratch/midway3/tfairnington/time_shift/wasp94_delta_preview/g395h_nrs2.csv",
+      "size_bytes": 77569,
+      "mtime_ns": 1792203296000000000,
+      "sha256": "9c6b2f64f0a3936b2e1c078f0c002b3213d06e681da8f16c391f671cfe9347a9"
+    },
+    {
+      "path": "/scratch/midway3/tfairnington/time_shift/wasp94_delta_preview/whitelight.json",
+      "size_bytes": 19104,
+      "mtime_ns": 1792199270000000000,
+      "sha256": "49ea453b8659a75b8d4527a18977e0e38f6742efea3cd875bf251fa37c386572"
+    },
+    {
+      "path": "/project/ekempton/tfairnington/JWST/03_trexolists_extended_with_nasa_ps_filled.csv",
+      "size_bytes": 247479,
+      "mtime_ns": 1758206834350056000,
+      "sha256": "e7a050950ffea54adda85a1c70f942f08f81ffe3b456c8d3662ba14282a4bf19"
+    },
+    {
+      "path": "/scratch/midway3/tfairnington/time_shift/wasp94_eq_guillot/results/run_summary.json",
+      "size_bytes": 2269,
+      "mtime_ns": 1792702734292009000,
+      "sha256": "607ad795d45243612593255eb7773e0db7701314c7d759e329bb581cebb84b06"
+    }
+  ]
+}
