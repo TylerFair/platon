@@ -207,9 +207,13 @@ class Plotter:
             else retrieval_result.equal_samples if retrieval_result.retrieval_type == "pymultinest" \
             else retrieval_result.samples
         labels, samples = label_by_temperature(retrieval_result.fit_info, samples)
-        if retrieval_result.retrieval_type in ("dynesty", "nautilus"):
+        if retrieval_result.retrieval_type == "dynesty":
             fig = corner.corner(samples, weights=retrieval_result.weights,
                                 range=[0.99] * samples.shape[1],
+                                show_titles=True, labels=labels, **args)
+        elif retrieval_result.retrieval_type == "nautilus":
+            # Equal-weight rows, then the best fit
+            fig = corner.corner(samples[:-1], range=[0.99] * samples.shape[1],
                                 show_titles=True, labels=labels, **args)
         elif retrieval_result.retrieval_type == "pymultinest":
             fig = corner.corner(samples, range=[0.99] * samples.shape[1],
