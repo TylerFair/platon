@@ -28,6 +28,13 @@ class _FitInfo:
     def _from_unit_interval_array(self, cube):
         return np.array([800 + 800 * cube[0], cube[1]])
 
+    def _from_unit_interval_batch(self, cubes):
+        return np.array([self._from_unit_interval_array(row) for row in cubes])
+
+    def _get(self, name):
+        param = self.all_params.get(name)
+        return None if param is None else param.best_guess
+
     def _ln_prior(self, params):
         return 0
 
@@ -78,7 +85,7 @@ class TestNautilus(unittest.TestCase):
                         return_value=(0, np.zeros(2), np.zeros(2))):
             return retriever.run_nautilus(
                 None, None, None, None, None, None, _FitInfo(),
-                num_final_samples=0, verbose=False)
+                num_final_samples=0, verbose=False, streaming_statistics=False)
 
     def test_batches_where_supported(self):
         batches = []
@@ -131,7 +138,7 @@ class TestNautilus(unittest.TestCase):
                         return_value=(0, np.zeros(2), np.zeros(2))):
             result = retriever.run_nautilus(
                 None, None, None, None, None, None, _FitInfo(),
-                num_final_samples=3, verbose=False)
+                num_final_samples=3, verbose=False, streaming_statistics=False)
 
         self.assertIsInstance(result, RetrievalResult)
         self.assertEqual(result.retrieval_type, "nautilus")

@@ -169,6 +169,38 @@ class FitInfo:
                 (result[cold_i], result[hot_i]))
         return result
 
+    def _from_unit_interval_batch(self, cubes):
+        """Transform rows of unit-prior coordinates without a per-row callback.
+
+        Keep the scalar path unchanged. Custom parameter classes retain their
+        scalar transform; built-in uniform and Gaussian priors operate on a
+        whole column with the same formulas and ordering as the scalar path.
+        """
+        cubes = np.asarray(cubes)
+        n_dim = len(self.fit_param_names)
+        if cubes.ndim != 2 or cubes.shape[1] != n_dim:
+            raise ValueError("Prior batch must have shape (n_points, n_params)")
+        if not np.all((cubes >= 0) & (cubes <= 1)):
+            raise ValueError("Prior coordinates must lie in the unit interval")
+        result = np.empty(cubes.shape, dtype=float)
+        for i, name in enumerate(self.fit_param_names):
+            param = self.all_params[name]
+            if type(param) is _UniformParam:
+                # _UniformParam's scalar assertion does not accept a column.
+                if not np.isfinite(param.low_lim) or not np.isfinite(param.high_lim):
+                    raise ValueError("Limit cannot be infinity")
+                result[:, i] = param.low_lim + (param.high_lim - param.low_lim) * cubes[:, i]
+            elif type(param) is _GaussianParam:
+                result[:, i] = param.from_unit_interval(cubes[:, i])
+            else:
+                result[:, i] = [param.from_unit_interval(u) for u in cubes[:, i]]
+        for cold_name, hot_name in getattr(self, "ordered_pairs", []):
+            cold_i = self.fit_param_names.index(cold_name)
+            hot_i = self.fit_param_names.index(hot_name)
+            ordered = np.sort(result[:, [cold_i, hot_i]], axis=1)
+            result[:, cold_i], result[:, hot_i] = ordered[:, 0], ordered[:, 1]
+        return result
+
     def _ln_prior(self, array):
         if not self._within_limits(array):
             return -np.inf
