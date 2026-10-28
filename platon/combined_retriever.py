@@ -1372,7 +1372,7 @@ class CombinedRetriever:
     def run_nautilus(self, transit_bins, transit_depths, transit_errors,
                      eclipse_bins, eclipse_depths, eclipse_errors,
                      fit_info, include_condensation=True, rad_method="xsec",
-                     n_live=2000, n_eff=10000, n_networks=16,
+                     n_live=5000, n_eff=10000, n_networks=16,
                      discard_exploration=True, verbose=True,
                      num_final_samples=100, zero_opacities=(),
                      marginalize_nuisance=True, **nautilus_kwargs):
@@ -1383,9 +1383,17 @@ class CombinedRetriever:
         directly to :class:`nautilus.Sampler`.  marginalize_nuisance is as
         for run_dynesty; when it applies, the returned equal-weight samples
         are n_eff random rows of the resampled posterior, each with its
-        integrated-out parameters drawn from their posterior.  Two-sector
-        Guillot transit retrievals evaluate each batch of points at once
-        (vectorized), with exactly the scalar likelihood's values.
+        integrated-out parameters drawn from their posterior.  Transit
+        retrievals the batched likelihood supports evaluate each batch of
+        points at once (vectorized), with exactly the scalar likelihood's
+        values, 256 points per batch unless n_batch is given.
+
+        The defaults follow the Nautilus documentation and PLATON tests:
+        n_eff=10000 (a log-evidence error of about 0.01) and
+        discard_exploration=True for unbiased estimates; 16 networks, since
+        more networks need fewer likelihood calls; and 5,000 live points,
+        since with 1,000 a two-solution HAT-P-18 b retrieval missed the
+        narrower, higher-likelihood solution that 5,000 found.
         """
         try:
             from nautilus import Sampler
@@ -1437,6 +1445,7 @@ class CombinedRetriever:
                                  for row in cube])
             nautilus_ln_like = batched
             nautilus_kwargs["vectorized"] = True
+            nautilus_kwargs.setdefault("n_batch", 256)
 
         sampler = Sampler(
             transform_prior, nautilus_ln_like,

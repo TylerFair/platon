@@ -45,15 +45,23 @@ For PyMultiNest, ``maxiter`` sets the iteration limit (``0`` means
 unlimited). ``maxcall`` is not supported and raises ``ValueError``;
 use ``maxiter`` when a bounded run is needed.
 
-The Nautilus call above uses PLATON's defaults of 2,000 live points, 10,000
+The Nautilus call above uses PLATON's defaults of 5,000 live points, 10,000
 effective posterior samples, and 16 neural networks.  Written out explicitly,
 it is::
 
   nautilus_result = retriever.run_nautilus(
       *data,
-      n_live=2000,
+      n_live=5000,
       n_eff=10000,
       n_networks=16)
+
+The Nautilus documentation recommends at least 10,000 effective samples
+(a log-evidence error of about 0.01) and more networks to reduce the number
+of likelihood calls.  The live points set how well separate solutions are
+found: with 1,000, a HAT-P-18 b retrieval whose posterior has two solutions
+missed the narrower, higher-likelihood one, which 5,000 found.  When the
+batched likelihood applies, Nautilus evaluates 256 points per batch unless
+``n_batch`` is given.
 
 PyMultiNest retains its historical default of 250 live points.  The comparison
 uses 2,000 explicitly so that the live-point settings match.
@@ -79,7 +87,7 @@ Choosing between them
      - ``n_eff`` sets the effective sample target
    * - PLATON posterior
      - Equal-weight samples from PyMultiNest
-     - Original samples with normalized weights
+     - Equal-weight samples resampled from Nautilus's weighted posterior
    * - Extra options
      - ``multinest_kwargs``
      - Additional keywords go to ``nautilus.Sampler``
@@ -98,9 +106,11 @@ work for either result::
   Plotter.plot_retrieval_transit_spectrum(nautilus_result)
   Plotter.plot_retrieval_corner(nautilus_result)
 
-Nautilus keeps its weighted posterior in ``result.samples`` and
-``result.weights``.  PLATON only resamples it when equal-weight draws are
-needed for posterior spectra or temperature profiles.
+For Nautilus, ``result.samples`` holds equal-weight rows resampled from its
+weighted posterior (``n_eff`` of them when nuisance parameters are integrated
+out, each with those parameters drawn from their posterior), followed by the
+best fit.  ``result.weights``, ``result.logw`` and ``result.logl`` are
+Nautilus's own normalized posterior weights and log-likelihoods.
 
 Nautilus also provides reliable Bayesian evidence estimates and more honest
 posterior widths.  In a PLATON benchmark, `Savel et al. (2026)
