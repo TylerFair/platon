@@ -17,11 +17,15 @@ DEEP_CLAMP_PRESSURE = 1e6  # Pa (10 bar)
 
 
 class TransitDepthCalculator:
+    # The instance's, from __init__; this for calculators pickled before it existed
+    add_H_minus_absorption = False
+
     def __init__(self, include_condensation=True, ref_pressure=1e5,
                  method='xsec',
                  include_opacities=["CH4", "CO2", "CO", "H2O", "H2S", "HCN",
                                     "K", "Na", "NH3", "SO2", "TiO", "VO"],
-                 downsample=1, stellar_grid=None, logg_star=4.5, feh_star=0.):
+                 downsample=1, stellar_grid=None, logg_star=4.5, feh_star=0.,
+                 add_H_minus_absorption=False):
         '''
         All physical parameters are in SI.
 
@@ -40,7 +44,12 @@ class TransitDepthCalculator:
             described in _atmosphere_solver._load_stellar_grid.  Used instead
             of the built-in temperature-only spectra for T_star, T_het and
             T_het2, interpolated to logg_star (cgs) and feh_star.
+        add_H_minus_absorption : bool, optional
+            The default of `compute_depths`' add_H_minus_absorption, so that a
+            retrieval (which never passes it) can include H- bound-free and
+            free-free absorption, e.g. for ultra-hot planets.
         '''
+        self.add_H_minus_absorption = bool(add_H_minus_absorption)
         self.atm = AtmosphereSolver(include_condensation, ref_pressure,
                                     method, include_opacities, downsample,
                                     stellar_grid, logg_star, feh_star)
@@ -97,7 +106,7 @@ class TransitDepthCalculator:
     def compute_depths(self, t_p_profile, star_radius, planet_mass,
                        planet_radius, logZ=0, CO_ratio=0.53, CH4_mult=1,
                        gases=None, vmrs=None,
-                       add_gas_absorption=True, add_H_minus_absorption=False,
+                       add_gas_absorption=True, add_H_minus_absorption=None,
                        add_scattering=True, scattering_factor=1,
                        scattering_slope=4, scattering_ref_wavelength=1e-6,
                        add_collisional_absorption=True,
@@ -133,8 +142,9 @@ class TransitDepthCalculator:
             Multiple applied to equilibrium CH4 abundance, for methane depletion
         add_gas_absorption: float, optional
             Whether gas absorption is accounted for
-        add_H_minus_absorption: float, optional
-            Whether H- bound-free and free-free absorption is added in
+        add_H_minus_absorption: bool, optional
+            Whether H- bound-free and free-free absorption is added in;
+            None (the default) takes the calculator's add_H_minus_absorption
         add_scattering : bool, optional
             whether Rayleigh scattering is taken into account
         scattering_factor : float, optional
@@ -241,6 +251,8 @@ class TransitDepthCalculator:
             binned cold_depths and hot_depths, even if full_output is False
             (unless cold_fraction is 0 or 1).
        '''
+        if add_H_minus_absorption is None:
+            add_H_minus_absorption = self.add_H_minus_absorption
         hets = [T_star if T_het is None else T_het, 0 if het_cov_frac is None else het_cov_frac,
                 T_star if T_het2 is None else T_het2, 0 if het2_cov_frac is None else het2_cov_frac]
         if any(np.ndim(x) for x in hets):
