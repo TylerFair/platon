@@ -4,7 +4,7 @@ import corner
 from .constants import METRES_TO_UM, BAR_TO_PASCALS, R_jup
 from .retrieval_result import RetrievalResult
 from . TP_profile import Profile
-from .terminator import label_by_temperature
+from .terminator import label_by_temperature, report_time_shift_offsets
 import numpy as _np
 import dynesty
 
@@ -202,11 +202,13 @@ class Plotter:
         posteriors of the fitted parameters.
         """
         assert(isinstance(retrieval_result, RetrievalResult))
-        # Two-sector parameters are shown as cold/hot by temperature
+        # Two-sector parameters are shown as cold/hot by temperature, time-shift
+        # offsets as a grey level and relative offsets
         samples = retrieval_result.flatchain if retrieval_result.retrieval_type == "emcee" \
             else retrieval_result.equal_samples if retrieval_result.retrieval_type == "pymultinest" \
             else retrieval_result.samples
         labels, samples = label_by_temperature(retrieval_result.fit_info, samples)
+        labels, samples = report_time_shift_offsets(retrieval_result.fit_info, labels, samples)
         if retrieval_result.retrieval_type == "dynesty":
             fig = corner.corner(samples, weights=retrieval_result.weights,
                                 range=[0.99] * samples.shape[1],

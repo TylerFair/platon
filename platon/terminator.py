@@ -192,3 +192,37 @@ def label_by_temperature(fit_info, samples):
             labelled[swap, i], labelled[swap, j] = samples[swap, j], samples[swap, i]
             names[i], names[j] = "cold." + name[8:], "hot." + name[8:]
     return names, labelled
+
+
+def report_time_shift_offsets(fit_info, names, samples):
+    """(names, samples) with the fitted time-shift offsets re-expressed for
+    reporting as a grey level and relative offsets, as transit depth offsets
+    are relative to one dataset.  Each visit's offset is the true mid-transit
+    time minus that visit's reference time; the data fix their differences,
+    and the overall level only through the model.  The reference visit is the
+    one holding the depths that have no transit offset (the first visit if
+    none or several do): its offset is reported as t0_grey, and every other
+    visit's as <name>_rel, its offset minus the reference's.  This is the same
+    posterior in other coordinates; fits and models keep the per-visit offsets,
+    so pass a copy of what they use."""
+    offsets = fit_info._get("time_shift_offsets") or {}
+    fitted = sorted((name for name in offsets if name in names), key=lambda name: offsets[name][0])
+    if not fitted:
+        return list(names), samples
+    n_points = max(end for _, end in offsets.values())
+    free = np.ones(n_points, bool)
+    for start, end in (fit_info._get("transit_offsets") or {}).values():
+        free[start:end] = False
+    holding = [name for name in fitted if free[slice(*offsets[name])].any()]
+    reference = holding[0] if len(holding) == 1 else fitted[0]
+    names = list(names)
+    samples = np.array(samples, float, ndmin=2)
+    level = samples[:, names.index(reference)].copy()
+    for name in fitted:
+        i = names.index(name)
+        if name == reference:
+            names[i] = "t0_grey"
+        else:
+            samples[:, i] -= level
+            names[i] = name + "_rel"
+    return names, samples

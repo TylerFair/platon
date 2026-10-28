@@ -22,7 +22,8 @@ from ._params import _UniformParam, _GaussianParam
 from .errors import AtmosphereError
 from ._output_writer import write_param_estimates_file
 from .TP_profile import Profile
-from .terminator import TwoSectorTerminator, label_by_temperature, limb_time_shifts
+from .terminator import TwoSectorTerminator, label_by_temperature, limb_time_shifts, \
+    report_time_shift_offsets
 from .retrieval_result import RetrievalResult
 from .custom_dynesty_result import CustomDynestyResult
 
@@ -1020,11 +1021,7 @@ class CombinedRetriever:
         divisors, new_labels = self._get_divisors_labels(
             np.median(samples[:-1], axis=0), labels)
         
-        write_param_estimates_file(
-            samples[:-1] / divisors,
-            samples[-1] / divisors,
-            best_ln_prob,
-            new_labels)
+        self._write_estimates(fit_info, samples / divisors, best_ln_prob, new_labels)
 
         best_fit_transit_depths, best_fit_transit_info, best_fit_eclipse_depths, best_fit_eclipse_info = self._ln_like(
             best_params_arr, transit_calc, eclipse_calc, fit_info,
@@ -1059,6 +1056,14 @@ class CombinedRetriever:
                 self._pointwise_ln_like(params, fit_info, like_args))
         retrieval_result.loo_total, retrieval_result.loos, retrieval_result.loo_ks = psisloo(np.array(retrieval_result.pointwise_lnlikes))
         return retrieval_result
+
+    @staticmethod
+    def _write_estimates(fit_info, samples, best_ln_prob, labels):
+        """BestFit.txt from samples (equal-weight rows, then the best fit), with
+        the time-shift offsets reported as a grey level and relative offsets
+        (report_time_shift_offsets)."""
+        labels, samples = report_time_shift_offsets(fit_info, labels, samples)
+        write_param_estimates_file(samples[:-1], samples[-1], best_ln_prob, labels)
 
     def _get_divisors_labels(self, medians, labels):
         divisors = np.ones(len(labels))
@@ -1197,11 +1202,7 @@ class CombinedRetriever:
         divisors, new_labels = self._get_divisors_labels(
             np.median(samples[:-1], axis=0), labels)
         
-        write_param_estimates_file(
-            samples[:-1] / divisors,
-            samples[-1] / divisors,
-            best_ln_prob,
-            new_labels)
+        self._write_estimates(fit_info, samples / divisors, best_ln_prob, new_labels)
         
         best_fit_transit_depths, best_fit_transit_info, best_fit_eclipse_depths, best_fit_eclipse_info = self._ln_like(
             best_params_arr, transit_calc, eclipse_calc, fit_info,
@@ -1328,11 +1329,7 @@ class CombinedRetriever:
         divisors, new_labels = self._get_divisors_labels(
             np.median(samples[:-1], axis=0), labels)
         
-        write_param_estimates_file(
-            samples[:-1] / divisors,
-            samples[-1] / divisors,
-            best_ln_prob,
-            new_labels)
+        self._write_estimates(fit_info, samples / divisors, best_ln_prob, new_labels)
 
         best_fit_transit_depths, best_fit_transit_info, best_fit_eclipse_depths, best_fit_eclipse_info = self._ln_like(
             best_params_arr,
@@ -1480,9 +1477,7 @@ class CombinedRetriever:
             fit_info, np.vstack([equal_samples, best_params_arr]))
         divisors, new_labels = self._get_divisors_labels(
             np.median(samples[:-1], axis=0), labels)
-        write_param_estimates_file(
-            samples[:-1] / divisors, samples[-1] / divisors,
-            best_ln_prob, new_labels)
+        self._write_estimates(fit_info, samples / divisors, best_ln_prob, new_labels)
 
         best = self._ln_like(
             best_params_arr, transit_calc, eclipse_calc, fit_info,

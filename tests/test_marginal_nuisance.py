@@ -7,6 +7,7 @@ import scipy.stats
 from platon.combined_retriever import CombinedRetriever
 from platon.transit_depth_calculator import TransitDepthCalculator
 from platon.constants import R_sun, M_jup, R_jup
+from platon.terminator import report_time_shift_offsets
 
 
 def trapezoid_ln_weights(x):
@@ -160,6 +161,34 @@ class TestMarginalNuisance(unittest.TestCase):
         # Errors are never inflated by a factor
         for name in ("log_error_inflation", "transit_error_inflations"):
             self.assertNotIn(name, self.fit_info().all_params)
+
+    def test_report_time_shift_offsets(self):
+        # Reported as a grey level (the visit with the unshifted depths) and
+        # offsets relative to it; the samples themselves are left alone
+        n = self.n
+        fit_info = self.fit_info(transit_offsets={"off_b": (20, n)}, time_shifts=np.zeros(n),
+                                 time_shift_errors=np.ones(n),
+                                 time_shift_offsets={"t0_b": (20, n), "t0_a": (0, 20)})
+        for name in ("T", "t0_a", "t0_b"):
+            fit_info.add_uniform_fit_param(name, -100, 1800)
+        samples = np.array([[1000., 5., 12.], [1100., -3., 9.]])
+        names, reported = report_time_shift_offsets(fit_info, fit_info.fit_param_names, samples)
+        self.assertEqual(names, ["T", "t0_grey", "t0_b_rel"])
+        np.testing.assert_array_equal(reported, [[1000., 5., 7.], [1100., -3., 12.]])
+        self.assertEqual(samples[0, 2], 12.)
+        # The reference follows the depths' reference, not the order
+        fit_info.all_params["transit_offsets"].best_guess = {"off_a": (0, 20)}
+        names, reported = report_time_shift_offsets(fit_info, fit_info.fit_param_names, samples)
+        self.assertEqual(names, ["T", "t0_a_rel", "t0_grey"])
+        np.testing.assert_array_equal(reported[:, 1:], [[-7., 12.], [-12., 9.]])
+        # With no transit offsets, the first visit is
+        fit_info.all_params["transit_offsets"].best_guess = None
+        names, reported = report_time_shift_offsets(fit_info, fit_info.fit_param_names, samples)
+        self.assertEqual(names, ["T", "t0_grey", "t0_b_rel"])
+        # Nothing to report without fitted time-shift offsets
+        plain = self.fit_info()
+        plain.add_uniform_fit_param("T", 800, 1800)
+        self.assertEqual(report_time_shift_offsets(plain, ["T"], samples[:, :1])[0], ["T"])
 
     def test_range_excesses(self):
         # Two instruments with their own excesses (one with an offset), and a
