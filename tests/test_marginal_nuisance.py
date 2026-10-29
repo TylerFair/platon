@@ -167,7 +167,7 @@ class TestMarginalNuisance(unittest.TestCase):
         # offsets relative to it; the samples themselves are left alone
         n = self.n
         fit_info = self.fit_info(transit_offsets={"off_b": (20, n)}, time_shifts=np.zeros(n),
-                                 time_shift_errors=np.ones(n),
+                                 time_shift_errors=np.ones(n), time_shift_coefficients=np.full(n, 3e3),
                                  time_shift_offsets={"t0_b": (20, n), "t0_a": (0, 20)})
         for name in ("T", "t0_a", "t0_b"):
             fit_info.add_uniform_fit_param(name, -100, 1800)

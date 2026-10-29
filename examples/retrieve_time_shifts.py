@@ -3,8 +3,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from platon.combined_retriever import CombinedRetriever
-from platon.constants import AU, M_jup, R_jup, R_sun
-from platon.terminator import TerminatorSector, TwoSectorTerminator, limb_time_shifts
+from platon.constants import M_jup, R_jup, R_sun
+from platon.terminator import TerminatorSector, TwoSectorTerminator
 from platon.TP_profile import Profile
 from platon.transit_depth_calculator import TransitDepthCalculator
 
@@ -13,7 +13,6 @@ from platon.transit_depth_calculator import TransitDepthCalculator
 Rs = 1.16 * R_sun
 Mp = 0.73 * M_jup
 Rp = 1.40 * R_jup
-a, period, b = 0.047 * AU, 3.52 * 86400, 0.5
 terminator = TwoSectorTerminator(
     TerminatorSector(Profile.isothermal(900), cloudtop_pressure=1e3),
     TerminatorSector(Profile.isothermal(1400), cloudtop_pressure=1e6))
@@ -25,8 +24,10 @@ calculator = TransitDepthCalculator()
 calculator.change_wavelength_bins(bins)
 wavelengths, true_depths, info = calculator.compute_depths(
     terminator, Rs, Mp, Rp, T_star=6100)
-true_shifts = limb_time_shifts(
-    info["cold_depths"], info["hot_depths"], Rs, a, period, b)
+# Shift per stellar radius of trailing-minus-leading limb radius, from the
+# light-curve fits that measured the shifts (e.g. koala's linear response)
+coefficients = np.full(len(bins), 2.8e3)
+true_shifts = coefficients * (np.sqrt(info["hot_depths"]) - np.sqrt(info["cold_depths"]))
 
 rng = np.random.default_rng(42)
 errors = np.full(len(bins), 50e-6)
@@ -38,7 +39,7 @@ retriever = CombinedRetriever()
 fit_info = retriever.get_default_fit_info(
     Rs=Rs, Mp=Mp, Rp=Rp, T_star=6100, transit_terminator=terminator,
     time_shifts=time_shifts, time_shift_errors=time_shift_errors,
-    a=a, period=period, b=b,
+    time_shift_coefficients=coefficients,
     time_shift_offsets={"t0_offset": (0, len(bins))})
 for sector in ("sector1", "sector2"):
     fit_info.add_uniform_fit_param(sector + ".T", 500, 2000)

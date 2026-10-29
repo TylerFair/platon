@@ -230,38 +230,27 @@ The shifts are fitted mid-transit times minus a reference time, in seconds;
 positive means later.  Fit them together with the depths from the same bins and
 light-curve fits.  A larger trailing limb gives a positive atmospheric shift.
 
-For leading and trailing limb depths :math:`D_L,D_T`, PLATON uses the mean depth
-and the prescription of `Murphy, Beatty & Apai (2024)
-<https://arxiv.org/abs/2407.17564>`_ and `Mukherjee et al. (2026)
-<https://arxiv.org/abs/2610.22271>`_:
+PLATON models the shift that your light-curve fits would measure through their
+linear response to a limb asymmetry.  Calibrate it once per bin: perturb the
+radii of the two halves of the planet in each spectroscopic light curve, refit
+(or linearize the fit) exactly as the data were fitted, and record the change
+in mid-transit time per unit trailing-minus-leading radius, in seconds per
+stellar radius.  This accounts for each bin's orbit, limb darkening, time
+sampling, baseline and priors.  For two half-disks the response is
+antisymmetric in the two radii, so one coefficient per bin suffices.  Pass
+these as ``time_shift_coefficients``, which ``time_shifts`` require; for
+leading and trailing limb depths :math:`D_L,D_T` the model shift is
 
 .. math::
 
-   R_L = \sqrt{D_L},\quad R_T = \sqrt{D_T},\quad
-   R_\mathrm{eff} = \sqrt{(D_L+D_T)/2},\quad x(R)=\sqrt{(1+R)^2-b^2},
+   \tau = c\,(\sqrt{D_T} - \sqrt{D_L}).
 
-   \tau = \left[\frac{x(R_T)-x(R_L)}{2}
-          + \frac{\sqrt{1-R_L^2}-\sqrt{1-R_\mathrm{eff}^2}}{2}\right]
-          \frac{R_\star P}{2\pi a}(1.221+0.079b-0.718b^2).
-
-Supply ``Rs`` and ``a`` in metres, ``period`` in seconds, and impact parameter
-``b``.  Keep ``sector1.fraction`` fixed at 0.5.  Here ``sector1`` is the leading
+Keep ``sector1.fraction`` fixed at 0.5.  Here ``sector1`` is the leading
 (morning) limb and ``sector2`` the trailing (evening) limb; posterior labels
 become ``morning.`` and ``evening.`` without sorting by temperature.
 ``TwoSectorTerminator(..., cold_leads=False)`` puts the hot limb first instead.
 The binned limb depths are ``info["cold_depths"]`` and ``info["hot_depths"]``,
 available even with ``full_output=False``.
-
-The prescription above is calibrated for batman fits as a function of ``b``
-only.  For the most accurate model, calibrate your own light-curve fits:
-inject a small radius difference between the two halves of the planet into
-each spectroscopic light curve, refit it exactly as the data were fitted, and
-record the change in mid-transit time per unit trailing-minus-leading radius
-(in seconds per stellar radius).  This accounts for each bin's limb darkening,
-time sampling and baseline.  For two half-disks the shift is antisymmetric in
-the two radii, so one coefficient per bin suffices.  Pass these as
-``time_shift_coefficients=coefficients``; the model shift is then
-``coefficients * (sqrt(D_T) - sqrt(D_L))``.
 
 Fit one time offset per visit/instrument unless the true mid-transit time is
 known independently.  Each offset is the true time minus that range's reference
@@ -271,7 +260,7 @@ variation of the shift is informative::
   fit_info = retriever.get_default_fit_info(
       Rs=Rs, Mp=Mp, Rp=Rp, transit_terminator=terminator,
       time_shifts=time_shifts, time_shift_errors=time_shift_errors,
-      a=0.047 * AU, period=3.52 * 86400, b=0.5,
+      time_shift_coefficients=coefficients,
       time_shift_offsets={"t0_offset": (0, len(depths))})
   for sector in ("sector1", "sector2"):
       fit_info.add_uniform_fit_param(sector + ".T", 300, 3000)
@@ -283,9 +272,9 @@ variation of the shift is informative::
 :download:`Download the complete time-shift retrieval example
 <../examples/retrieve_time_shifts.py>`.
 
-This prescription assumes a circular orbit and two half-disk limbs; the impact
-parameter calibration is valid for :math:`0 \le b \le 0.8`.  Stellar flares,
-spot crossings and instrumental tilt events can also shift mid-transit times.
+The coefficients describe two half-disk limbs and are first order in the radius
+difference.  Stellar flares, spot crossings and instrumental tilt events can
+also shift mid-transit times.
 
 Limitations
 ===========
@@ -305,7 +294,8 @@ The design of `Mukherjee et al. (2026)
 the two limbs.  Give each limb a Guillot profile, cloud deck, haze and cloud
 coverage so that these differences need not be absorbed into its abundances.
 Here ``bins``, ``depths``, ``errors``, ``time_shifts`` and ``time_shift_errors``
-are measured arrays in wavelength order, with two visits/instruments joined
+are measured arrays in wavelength order, ``coefficients`` the calibrated
+responses described above, with two visits/instruments joined
 at ``n_first``.  Wavelengths are in metres and times in seconds::
 
   from platon.constants import AU, M_jup, R_jup, R_sun
@@ -314,7 +304,7 @@ at ``n_first``.  Wavelengths are in metres and times in seconds::
   from platon.combined_retriever import CombinedRetriever
 
   Rs, Mp, Rp = R_sun, M_jup, R_jup
-  a, period, b = 0.05 * AU, 3.5 * 86400, 0.4
+  a = 0.05 * AU
   morning = TerminatorSector(
       Profile.guillot(6000, Rs, a, Mp, Rp, 0.9, -2, -1, 150),
       cloudtop_pressure=1e3, scattering_factor=10, scattering_slope=6,
@@ -329,7 +319,7 @@ at ``n_first``.  Wavelengths are in metres and times in seconds::
       Rs, Mp, Rp, transit_terminator=terminator,
       logZ=None, CO_ratio=None, fit_vmr=True,
       time_shifts=time_shifts, time_shift_errors=time_shift_errors,
-      a=a, period=period, b=b,
+      a=a, time_shift_coefficients=coefficients,
       time_shift_offsets={"t0_visit1": (0, n_first),
                           "t0_visit2": (n_first, len(depths))},
       transit_offsets={"depth_offset": (n_first, len(depths))})

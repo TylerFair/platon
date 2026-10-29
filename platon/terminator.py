@@ -8,18 +8,6 @@ from .TP_profile import Profile
 GUILLOT_SHARED_PARAMS = ("T_star", "Rs", "a", "Mp", "Rp", "log_k_th", "T_int")
 
 
-def limb_time_shifts(leading_depths, trailing_depths, Rs, a, period, b):
-    """Mid-transit time shifts (s, positive = later) that a spherical-planet
-    light-curve fit measures for leading (morning) and trailing (evening)
-    half-disks with these transit depths: Murphy et al. (2024) eqs. 11 and 20,
-    calibrated in impact parameter b by Mukherjee et al. (2026) eq. 3."""
-    R_L, R_T = np.sqrt(leading_depths), np.sqrt(trailing_depths)
-    R_eff = np.sqrt((np.asarray(leading_depths) + trailing_depths) / 2)
-    shift = (np.sqrt((1 + R_T)**2 - b**2) - np.sqrt((1 + R_L)**2 - b**2)) / 2
-    shift += (np.sqrt(1 - R_L**2) - np.sqrt(1 - R_eff**2)) / 2
-    return shift * Rs * period / (2 * np.pi * a) * (1.221 + 0.079 * b - 0.718 * b**2)
-
-
 @dataclass(frozen=True)
 class TerminatorSector:
     """One sector of a two-sector terminator."""

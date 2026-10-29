@@ -19,8 +19,7 @@ from ._params import _UniformParam, _GaussianParam
 from .errors import AtmosphereError
 from ._output_writer import write_param_estimates_file
 from .TP_profile import Profile
-from .terminator import TwoSectorTerminator, label_by_temperature, limb_time_shifts, \
-    report_time_shift_offsets
+from .terminator import TwoSectorTerminator, label_by_temperature, report_time_shift_offsets
 from .retrieval_result import RetrievalResult
 
 
@@ -771,10 +770,7 @@ class CombinedRetriever:
                     leading, trailing = transit_info["cold_depths"], transit_info["hot_depths"]
                     if not transit_profile.cold_leads:
                         leading, trailing = trailing, leading
-                    coefficients = params_dict.get("time_shift_coefficients")
-                    shifts = limb_time_shifts(leading, trailing, params_dict["Rs"], params_dict["a"],
-                                              params_dict["period"], params_dict["b"]) \
-                        if coefficients is None else coefficients * (np.sqrt(trailing) - np.sqrt(leading))
+                    shifts = params_dict["time_shift_coefficients"] * (np.sqrt(trailing) - np.sqrt(leading))
                     self._apply_offsets(shifts, params_dict, "time_shift")
                     self._apply_slopes(shifts, params_dict)
                     residuals = shifts - params_dict["time_shifts"]
@@ -1361,7 +1357,7 @@ class CombinedRetriever:
                              transit_terminator=None,
                              stellar_grid=None, logg_star=4.5, feh_star=0.,
                              transit_visits=None,
-                             time_shifts=None, time_shift_errors=None, period=None, b=None,
+                             time_shifts=None, time_shift_errors=None,
                              time_shift_offsets=None, time_shift_coefficients=None,
                              time_shift_slopes=None, time_shift_slope_basis=None,
                              time_shift_error_excesses=None,
@@ -1423,11 +1419,8 @@ class CombinedRetriever:
             Fitted mid-transit times minus a reference time, and their errors,
             in seconds, one per transit point from the same bins and light-curve
             fits as the depths.  Require transit_terminator with sector1.fraction
-            fixed at 0.5; sector1 is leading (morning), sector2 trailing (evening).
-            Also require Rs and a (semi-major axis in m, passed as a keyword,
-            as for Guillot profiles), period and b.
-        period, b : float, optional
-            Orbital period in seconds and impact parameter for time shifts.
+            fixed at 0.5 and time_shift_coefficients; sector1 is leading
+            (morning), sector2 trailing (evening).
         time_shift_offsets : dict, optional
             Like transit_offsets, in seconds, added to model shifts.  Each is
             the true mid-transit time minus the reference time for its range;
@@ -1448,10 +1441,11 @@ class CombinedRetriever:
             signal), and the retrievers integrate it out in closed form, jointly
             with the time-shift offset of the same range.
         time_shift_coefficients : array, optional
-            Calibrated shift per unit trailing-minus-leading radius, in s per
-            stellar radius, one per transit point (e.g. from injecting a small
-            limb asymmetry into the light-curve fits).  If given, these replace
-            the Mukherjee et al. (2026) prescription.
+            Required with time_shifts: the shift per unit trailing-minus-leading
+            radius, in s per stellar radius, one per transit point, from the
+            light-curve fits that measured the shifts (e.g. their linear
+            response to a small limb asymmetry).  The model shift is the
+            coefficient times the trailing minus the leading limb radius.
         profile_type : string
             "isothermal", "parametric" (Madhusudhan & Seager 2009),
             "radiative_solution" (Line et al 2013), or "guillot" (Guillot
@@ -1514,6 +1508,11 @@ class CombinedRetriever:
                         "{}={} conflicts with the transit_terminator's "
                         "{}={}".format(name, current, name, value))
                 all_variables[name] = value
+
+        if time_shifts is not None and (time_shift_coefficients is None or
+                np.shape(time_shift_coefficients) != np.shape(time_shifts)):
+            raise ValueError("time_shifts require time_shift_coefficients, one per time shift, "
+                             "from the light-curve fits that measured them")
 
         range_names = {}
         for kind, what, ranges in (

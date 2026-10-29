@@ -136,8 +136,9 @@ class TestBatchedLikelihood(unittest.TestCase):
                        for beta in (.7, .9)]
             full = CombinedRetriever.get_default_fit_info(
                 Rs=Rs, Mp=0.73 * M_jup, Rp=1.4 * R_jup, T_star=6000, logZ=1, CO_ratio=.5,
-                transit_terminator=TwoSectorTerminator(*sectors), a=a, b=.3, period=3.5 * 86400,
+                transit_terminator=TwoSectorTerminator(*sectors), a=a,
                 time_shifts=rng.normal(0, 10, n), time_shift_errors=np.full(n, 10.),
+                time_shift_coefficients=np.full(n, 3e3),
                 time_shift_offsets={"t0": (0, n)}, transit_offsets={"offset": (n // 2, n)})
             priors = {"beta": (.6, 1.), "log_gamma": (-1.5, 0), "log_cloudtop_P": (2, 6),
                       "log_scatt_factor": (0, 2), "scatt_slope": (2, 6)}
@@ -204,8 +205,8 @@ class TestBatchedLikelihood(unittest.TestCase):
                            for profile in sector_profiles]
                 full = CombinedRetriever.get_default_fit_info(
                     Rs=Rs, Mp=0.73 * M_jup, Rp=1.4 * R_jup, logZ=1, CO_ratio=.5,
-                    transit_terminator=TwoSectorTerminator(*sectors), a=a, b=.3,
-                    period=3.5 * 86400, time_shifts=rng.normal(0, 10, n),
+                    transit_terminator=TwoSectorTerminator(*sectors), a=a,
+                    time_shifts=rng.normal(0, 10, n), time_shift_coefficients=np.full(n, 3e3),
                     time_shift_errors=np.full(n, 10.), time_shift_offsets={"t0": (0, n)},
                     transit_offsets={"offset": (n // 2, n)})
                 priors = dict(profile_priors, log_cloudtop_P=(2, 6), log_scatt_factor=(0, 2),
@@ -319,8 +320,9 @@ class TestBatchedLikelihood(unittest.TestCase):
             # one shared free SO2 on top, integrated offsets and error_excess
             "guillot, shared SO2 on equilibrium": dict(
                 fit=dict(T_star=6000, logZ=1, CO_ratio=.5, fit_vmr=True,
-                         transit_terminator=guillot, a=a, b=.3, period=3.5 * 86400,
+                         transit_terminator=guillot, a=a,
                          time_shifts=rng.normal(0, 10, n), time_shift_errors=np.full(n, 10.),
+                         time_shift_coefficients=np.full(n, 3e3),
                          time_shift_offsets={"t0": (0, n)},
                          transit_offsets={"off_a": (n // 3, 2 * n // 3), "off_b": (2 * n // 3, n)}),
                 gases=(["SO2"], False),

@@ -26,7 +26,7 @@ from ._forward_prep import prepare_forward_inputs
 from .TP_profile import Profile, _default_pressures
 from .constants import G
 from ._params import _GaussianParam
-from .terminator import TwoSectorTerminator, limb_time_shifts
+from .terminator import TwoSectorTerminator
 from .transit_depth_calculator import DEEP_CLAMP_PRESSURE
 
 SECTORS = ("sector1.", "sector2.")
@@ -480,10 +480,7 @@ class BatchedLikelihood:
         errors = np.sqrt(self.errors**2 + excess[:, None])
         blocks = {"transit": (calculated - self.depths, errors)}
         if values.get("time_shifts") is not None:
-            coefficients = values.get("time_shift_coefficients")
-            shifts = limb_time_shifts(limbs[:, 0], limbs[:, 1], values["Rs"],
-                values["a"], values["period"], values["b"]) if coefficients is None else \
-                coefficients * (np.sqrt(limbs[:, 1]) - np.sqrt(limbs[:, 0]))
+            shifts = values["time_shift_coefficients"] * (np.sqrt(limbs[:, 1]) - np.sqrt(limbs[:, 0]))
             apply_offsets(shifts, "time_shift")
             errors = np.broadcast_to(values["time_shift_errors"], shifts.shape)
             blocks["time_shift"] = shifts - values["time_shifts"], errors
@@ -542,9 +539,7 @@ class BatchedLikelihood:
             errors = np.sqrt(self.errors**2 + p["error_excess"]**2)
             blocks = {"transit": (calculated - self.depths, errors)}
             if p.get("time_shifts") is not None:
-                coefficients = p.get("time_shift_coefficients")
-                shifts = limb_time_shifts(limbs[0], limbs[1], p["Rs"], p["a"], p["period"], p["b"]) \
-                    if coefficients is None else coefficients * (np.sqrt(limbs[1]) - np.sqrt(limbs[0]))
+                shifts = p["time_shift_coefficients"] * (np.sqrt(limbs[1]) - np.sqrt(limbs[0]))
                 self.retriever._apply_offsets(shifts, p, "time_shift")
                 errors = p["time_shift_errors"]
                 blocks["time_shift"] = shifts - p["time_shifts"], errors

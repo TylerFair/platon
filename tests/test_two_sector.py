@@ -5,7 +5,7 @@ from scipy.special import expn
 
 from platon.constants import AU, G, M_jup, R_jup, R_sun
 from platon.fit_info import FitInfo
-from platon.terminator import TerminatorSector, TwoSectorTerminator, limb_time_shifts
+from platon.terminator import TerminatorSector, TwoSectorTerminator
 from platon.TP_profile import Profile
 from platon.transit_depth_calculator import TransitDepthCalculator
 
@@ -25,17 +25,15 @@ def guillot(beta, log_gamma, log_k_th=-2, T_int=150, Rs=R_sun):
 
 
 class TestTwoSectorTypes(unittest.TestCase):
-    def test_limb_time_shifts(self):
-        depths = np.array([0.01, 0.0144])
-        np.testing.assert_array_equal(
-            limb_time_shifts(depths, depths, 7e8, 7e9, 259200, 0.4), 0)
-        shifts = limb_time_shifts(depths, depths[::-1], 7e8, 7e9, 259200, 0.4)
-        self.assertGreater(shifts[0], 0)
-        self.assertLess(shifts[1], 0)
-        expected = ((np.sqrt(1.12**2 - 0.16) - np.sqrt(1.1**2 - 0.16)) / 2
-                    + (np.sqrt(0.99) - np.sqrt(0.9878)) / 2)
-        expected *= 7e8 * 259200 / (2 * np.pi * 7e9) * 1.13772
-        self.assertAlmostEqual(shifts[0], expected)
+    def test_time_shifts_require_coefficients(self):
+        from platon.combined_retriever import CombinedRetriever
+        model = TwoSectorTerminator(TerminatorSector(isothermal(900)),
+                                    TerminatorSector(isothermal(1400)))
+        for coefficients in (None, np.ones(3)):
+            with self.assertRaises(ValueError):
+                CombinedRetriever.get_default_fit_info(
+                    R_sun, M_jup, R_jup, transit_terminator=model, time_shifts=np.zeros(2),
+                    time_shift_errors=np.ones(2), time_shift_coefficients=coefficients)
 
     def test_guillot_equation_and_units(self):
         beta = 1.1
@@ -499,12 +497,13 @@ class TestTwoSectorForwardModel(unittest.TestCase):
             leading, trailing = info["cold_depths"], info["hot_depths"]
             if not cold_leads:
                 leading, trailing = trailing, leading
-            shifts = limb_time_shifts(leading, trailing, self.Rs, A_ORBIT, 259200, 0.4)
+            coefficients = np.linspace(2.8e3, 3e3, len(depths))
+            shifts = coefficients * (np.sqrt(trailing) - np.sqrt(leading))
             errors = np.full_like(depths, 1e-5)
             fit_info = retriever.get_default_fit_info(
                 self.Rs, self.Mp, self.Rp, transit_terminator=model,
                 time_shifts=shifts + 7, time_shift_errors=np.ones_like(shifts),
-                a=A_ORBIT, period=259200, b=0.4,
+                a=A_ORBIT, time_shift_coefficients=coefficients,
                 transit_offsets={"depth_offset": (0, len(depths))},
                 time_shift_offsets={"t0_offset": (0, len(depths))})
             for name in ("sector1.T", "sector2.T"):
@@ -528,11 +527,7 @@ class TestTwoSectorForwardModel(unittest.TestCase):
             if not cold_leads:
                 leading, trailing = trailing, leading
             np.testing.assert_allclose(best["time_shifts"],
-                limb_time_shifts(leading, trailing, self.Rs, A_ORBIT, 259200, 0.4) + 7)
-            fit_info.all_params["time_shift_coefficients"].best_guess = np.full(len(shifts), 1e4)
-            _, best, _, _, _ = retriever._ln_like(params, *args, ret_best_fit=True)
-            np.testing.assert_allclose(best["time_shifts"], 7 + 1e4 * (np.sqrt(trailing) - np.sqrt(leading)))
-            fit_info.all_params["time_shift_coefficients"].best_guess = None
+                7 + coefficients * (np.sqrt(trailing) - np.sqrt(leading)))
             fit_info.add_uniform_fit_param("sector1.fraction", 0, 1)
             with self.assertRaises(ValueError):
                 retriever._validate_params(fit_info, self.calculator)
