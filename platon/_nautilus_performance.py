@@ -217,17 +217,26 @@ class StreamingShellStatistics:
                 abs(previous[1] - current[1]) / max(1.0, abs(current[1])))
 
     def _run(self, *args, **kwargs):
-        call = inspect.signature(self._original["run"]).bind(*args, **kwargs)
-        call.apply_defaults()
-        target = call.arguments["n_eff"]
-        n_shell = call.arguments["n_shell"]
-        timeout = call.arguments["timeout"]
+        # Hooks may wrap run as run(**kwargs); read the arguments from the first
+        # run in the class hierarchy that declares them.
+        for cls in type(self.sampler).__mro__:
+            run = cls.__dict__.get("run")
+            if run is not None and "n_eff" in inspect.signature(run).parameters:
+                declared = inspect.signature(run).bind(self.sampler, *args, **kwargs)
+                declared.apply_defaults()
+                break
+        else:
+            raise TypeError("No Sampler.run declares n_eff")
+        arguments = {k: v for k, v in declared.arguments.items() if k != "self"}
+        target = declared.arguments["n_eff"]
+        n_shell = declared.arguments["n_shell"]
+        timeout = declared.arguments["timeout"]
         started = perf_counter()
         previous_target = self._target
         self._target = target
         try:
             while True:
-                reported_success = self._original["run"](*call.args, **call.kwargs)
+                reported_success = self._original["run"](**arguments)
                 self.refresh()
                 success = (self.sampler.explored and
                            np.all(self.sampler.shell_n >= n_shell) and
@@ -236,10 +245,10 @@ class StreamingShellStatistics:
                     return bool(success)
                 remaining = timeout - (perf_counter() - started)
                 if (remaining <= 0 or
-                        self.sampler.n_like >= call.arguments["n_like_max"]):
+                        self.sampler.n_like >= arguments["n_like_max"]):
                     return False
                 self.diagnostics["stopping_corrections"] += 1
-                call.arguments["timeout"] = remaining
+                arguments["timeout"] = remaining
         finally:
             self._target = previous_target
 

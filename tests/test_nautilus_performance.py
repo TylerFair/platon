@@ -174,3 +174,22 @@ def test_compensated_moments_across_thousands_of_rare_tail_batches():
                       2 * moments.maximum + np.log(moments.squared)]
             expected = [logsumexp(values[:stop]), logsumexp(2 * values[:stop])]
             np.testing.assert_allclose(actual, expected, rtol=0, atol=1e-12)
+
+
+def test_run_wrapped_as_kwargs_only():
+    """Hooks (e.g. nautilus_accel's stall stop) may replace run with run(**kwargs)."""
+    class Wrapped(nautilus.Sampler):
+        def run(self, **kwargs):
+            return super().run(**kwargs)
+
+    def build(cls):
+        kwargs = {"backend": "numpy"} if "backend" in inspect.signature(nautilus.Sampler).parameters else {}
+        return cls(lambda x: x, lambda x: -np.sum(((x - 0.4) / 0.08) ** 2, axis=-1) / 2,
+                   n_dim=3, n_live=80, n_networks=0, n_batch=32, vectorized=True, seed=5, **kwargs)
+
+    reference, streaming = build(nautilus.Sampler), build(Wrapped)
+    controller = install_streaming_shell_statistics(streaming)
+    run = {"n_eff": 2000, "discard_exploration": True, "n_like_max": 20000}
+    assert reference.run(**run) and streaming.run(**run)
+    assert streaming.log_z == reference.log_z and streaming.n_like == reference.n_like
+    controller.close()
