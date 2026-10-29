@@ -79,14 +79,14 @@ class TestRetriever(unittest.TestCase):
         Plotter.plot_retrieval_transit_spectrum(result)
         
         self.assertTrue(isinstance(result, RetrievalResult))
-        self.assertEqual(result.samples.shape[1], len(self.fit_info.fit_param_names))
+        self.assertEqual(result.equal_samples.shape[1], len(self.fit_info.fit_param_names))
 
         retriever = CombinedRetriever()
         retriever.run_dynesty(self.wavelength_bins, self.depths, self.errors,
                                 None, None, None, self.fit_info, maxiter=20,
                                 include_condensation=True, num_final_samples=20)
         self.assertTrue(isinstance(result, RetrievalResult))
-        self.assertEqual(result.samples.shape[1], len(self.fit_info.fit_param_names))
+        self.assertEqual(result.equal_samples.shape[1], len(self.fit_info.fit_param_names))
 
 
     def test_transit_parametric_profile(self):

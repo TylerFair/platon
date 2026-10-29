@@ -5,7 +5,7 @@ from scipy.special import expn
 
 from platon.constants import AU, G, M_jup, R_jup, R_sun
 from platon.fit_info import FitInfo
-from platon.terminator import TerminatorSector, TwoSectorTerminator
+from platon.terminator import TerminatorSector, TwoSectorTerminator, limb_time_shifts
 from platon.TP_profile import Profile
 from platon.transit_depth_calculator import TransitDepthCalculator
 
@@ -25,6 +25,18 @@ def guillot(beta, log_gamma, log_k_th=-2, T_int=150, Rs=R_sun):
 
 
 class TestTwoSectorTypes(unittest.TestCase):
+    def test_limb_time_shifts(self):
+        depths = np.array([0.01, 0.0144])
+        np.testing.assert_array_equal(
+            limb_time_shifts(depths, depths, 7e8, 7e9, 259200, 0.4), 0)
+        shifts = limb_time_shifts(depths, depths[::-1], 7e8, 7e9, 259200, 0.4)
+        self.assertGreater(shifts[0], 0)
+        self.assertLess(shifts[1], 0)
+        expected = ((np.sqrt(1.12**2 - 0.16) - np.sqrt(1.1**2 - 0.16)) / 2
+                    + (np.sqrt(0.99) - np.sqrt(0.9878)) / 2)
+        expected *= 7e8 * 259200 / (2 * np.pi * 7e9) * 1.13772
+        self.assertAlmostEqual(shifts[0], expected)
+
     def test_guillot_equation_and_units(self):
         beta = 1.1
         log_gamma = -1
@@ -81,17 +93,28 @@ class TestTwoSectorTypes(unittest.TestCase):
 
     def test_retrieval_defaults_and_reconstruction(self):
         model = TwoSectorTerminator(
-            TerminatorSector(isothermal(900), 1e3, 10, 6),
-            TerminatorSector(isothermal(1400), 1e6, 0.1, 2),
+            TerminatorSector(isothermal(900), 1e3, 10, 6, 0.3),
+            TerminatorSector(isothermal(1400), 1e6, 0.1, 2, 0.8),
             0.4)
         defaults = model.retrieval_defaults()
         rebuilt = model.from_params(defaults)
 
         self.assertEqual(defaults["sector1.T"], 900)
         self.assertEqual(defaults["sector2.T"], 1400)
+        self.assertEqual(defaults["sector1.cloud_fraction"], 0.3)
+        self.assertEqual(defaults["sector2.cloud_fraction"], 0.8)
         self.assertEqual(rebuilt.cold_fraction, 0.4)
         self.assertEqual(rebuilt.cold.cloudtop_pressure, 1e3)
         self.assertEqual(rebuilt.hot.scattering_factor, 0.1)
+        for cold_leads in (True, False):
+            model = TwoSectorTerminator(model.cold, model.hot, 0.4, cold_leads)
+            rebuilt = model.from_params(model.retrieval_defaults())
+            self.assertEqual(rebuilt.cold_leads, cold_leads)
+            self.assertAlmostEqual(rebuilt.cold_fraction, 0.4)
+            self.assertEqual(rebuilt.cold.cloudtop_pressure, 1e3)
+            self.assertEqual(rebuilt.hot.scattering_factor, 0.1)
+            self.assertEqual(rebuilt.cold.cloud_fraction, 0.3)
+            self.assertEqual(rebuilt.hot.cloud_fraction, 0.8)
 
     def test_cold_and_hot_are_ordered(self):
         with self.assertRaises(ValueError):
@@ -137,8 +160,8 @@ class TestTwoSectorTypes(unittest.TestCase):
         from platon.combined_retriever import CombinedRetriever
         from platon.terminator import label_by_temperature
         model = TwoSectorTerminator(
-            TerminatorSector(isothermal(900), 1e3, 10, 6),
-            TerminatorSector(isothermal(1400), 1e6, 0.1, 2), 0.3)
+            TerminatorSector(isothermal(900), 1e3, 10, 6, 0.3),
+            TerminatorSector(isothermal(1400), 1e6, 0.1, 2, 0.8), 0.3)
         params = model.retrieval_defaults()
         # sector1 hotter: the whole sector moves, with its share
         params.update({"sector1.T": 1600., "sector2.T": 800.})
@@ -146,7 +169,10 @@ class TestTwoSectorTypes(unittest.TestCase):
         self.assertEqual(rebuilt.cold.profile.profile_params["T"], 800.)
         self.assertEqual(rebuilt.cold.cloudtop_pressure, 1e6)
         self.assertEqual(rebuilt.hot.scattering_factor, 10)
+        self.assertEqual(rebuilt.cold.cloud_fraction, 0.8)
+        self.assertEqual(rebuilt.hot.cloud_fraction, 0.3)
         self.assertAlmostEqual(rebuilt.cold_fraction, 0.7)
+        self.assertFalse(rebuilt.cold_leads)
 
         fit_info = CombinedRetriever.get_default_fit_info(
             R_sun, M_jup, R_jup, T=None, transit_terminator=model)
@@ -155,12 +181,16 @@ class TestTwoSectorTypes(unittest.TestCase):
         fit_info.add_uniform_fit_param("sector1.fraction", 0, 1)
         fit_info.add_uniform_fit_param("sector1.log_cloudtop_P", 0, 7)
         fit_info.add_uniform_fit_param("sector2.log_cloudtop_P", 0, 7)
+        fit_info.add_uniform_fit_param("sector1.cloud_fraction", 0, 1)
+        fit_info.add_uniform_fit_param("sector2.cloud_fraction", 0, 1)
         names, labelled = label_by_temperature(
-            fit_info, [[800., 2000., .2, 2., 5.], [2500., 1000., .9, 4., 6.]])
+            fit_info, [[800., 2000., .2, 2., 5., .3, .8],
+                       [2500., 1000., .9, 4., 6., .3, .8]])
         self.assertEqual(names, ["cold.T", "hot.T", "cold_fraction",
-                                 "cold.log_cloudtop_P", "hot.log_cloudtop_P"])
-        np.testing.assert_allclose(labelled, [[800., 2000., .2, 2., 5.],
-                                              [1000., 2500., .1, 6., 4.]])
+                                 "cold.log_cloudtop_P", "hot.log_cloudtop_P",
+                                 "cold.cloud_fraction", "hot.cloud_fraction"])
+        np.testing.assert_allclose(labelled, [[800., 2000., .2, 2., 5., .3, .8],
+                                              [1000., 2500., .1, 6., 4., .8, .3]])
 
     def test_guillot_sectors_are_compared_by_temperature_not_beta(self):
         from platon.terminator import sector_temperature
@@ -184,19 +214,69 @@ class TestTwoSectorForwardModel(unittest.TestCase):
         cls.calculator.change_wavelength_bins(
             1e-6 * np.array([[0.8, 1.0], [1.1, 1.4], [3.5, 4.5]]))
 
+    def test_parametric_retrieval(self):
+        from platon.combined_retriever import CombinedRetriever
+        model = TwoSectorTerminator(
+            TerminatorSector(Profile.parametric(900, 1e2, 1, 1, 1e6, 1500)),
+            TerminatorSector(Profile.parametric(1200, 1e2, 1, 1, 1e6, 1800)), 0.4)
+        defaults = model.retrieval_defaults()
+        self.assertEqual(defaults["sector1.log_P1"], 2)
+        self.assertEqual(defaults["sector2.log_P3"], 6)
+        for cold_leads in (True, False):
+            original = TwoSectorTerminator(model.cold, model.hot, 0.4, cold_leads)
+            rebuilt = model.from_params(original.retrieval_defaults())
+            self.assertEqual(rebuilt.cold_leads, cold_leads)
+            self.assertAlmostEqual(rebuilt.cold_fraction, 0.4)
+            for label in ("cold", "hot"):
+                np.testing.assert_array_equal(
+                    getattr(rebuilt, label).profile.temperatures,
+                    getattr(original, label).profile.temperatures)
+        retriever = CombinedRetriever()
+        fit_info = retriever.get_default_fit_info(
+            self.Rs, self.Mp, self.Rp, transit_terminator=model)
+        for label in ("sector1", "sector2"):
+            for name in ("T0", "log_P1", "alpha1", "alpha2", "log_P3", "T3"):
+                value = defaults[f"{label}.{name}"]
+                fit_info.add_uniform_fit_param(f"{label}.{name}", value * 0.9, value * 1.1)
+        retriever._validate_params(fit_info, self.calculator)
+        _, depths, _ = self.calculator.compute_depths(model, self.Rs, self.Mp, self.Rp)
+        self.assertTrue(np.isfinite(retriever._ln_like(
+            [defaults[name] for name in fit_info.fit_param_names],
+            self.calculator, None, fit_info, depths, np.full_like(depths, 1e-5), None, None)))
+
+    def test_haze_slope_limit(self):
+        from platon.combined_retriever import CombinedRetriever
+        retriever = CombinedRetriever()
+        one_d = retriever.get_default_fit_info(self.Rs, self.Mp, self.Rp, T=1000)
+        one_d.add_uniform_fit_param("scatt_slope", -2, 15)
+        retriever._validate_params(one_d, self.calculator)
+        steep = retriever.get_default_fit_info(self.Rs, self.Mp, self.Rp, T=1000)
+        steep.add_uniform_fit_param("scatt_slope", -2, 20)
+        with self.assertRaisesRegex(ValueError, "scatt_slope upper limit 20"):
+            retriever._validate_params(steep, self.calculator)
+        model = TwoSectorTerminator(
+            TerminatorSector(Profile.parametric(900, 1e2, 1, 1, 1e6, 1500)),
+            TerminatorSector(Profile.parametric(1200, 1e2, 1, 1, 1e6, 1800)), 0.4)
+        two = retriever.get_default_fit_info(self.Rs, self.Mp, self.Rp, transit_terminator=model)
+        two.add_uniform_fit_param("sector2.scatt_slope", -2, 15.5)
+        with self.assertRaisesRegex(ValueError, "sector2.scatt_slope upper limit 15.5"):
+            retriever._validate_params(two, self.calculator)
+
     def test_weighted_depths_and_full_output(self):
-        cold = TerminatorSector(isothermal(900), 1e3, 100, 6)
-        hot = TerminatorSector(isothermal(1400), 1e6, 0.1, 2)
+        cold = TerminatorSector(isothermal(900), 1e3, 100, 6, 0.3)
+        hot = TerminatorSector(isothermal(1400), 1e6, 0.1, 2, 0.8)
         model = TwoSectorTerminator(cold, hot, 0.3)
 
         _, cold_depths, cold_info = self.calculator.compute_depths(
             cold.profile, self.Rs, self.Mp, self.Rp,
             cloudtop_pressure=cold.cloudtop_pressure,
+            cloud_fraction=cold.cloud_fraction,
             scattering_factor=cold.scattering_factor,
             scattering_slope=cold.scattering_slope, full_output=True)
         _, hot_depths, hot_info = self.calculator.compute_depths(
             hot.profile, self.Rs, self.Mp, self.Rp,
             cloudtop_pressure=hot.cloudtop_pressure,
+            cloud_fraction=hot.cloud_fraction,
             scattering_factor=hot.scattering_factor,
             scattering_slope=hot.scattering_slope, full_output=True)
         _, depths, info = self.calculator.compute_depths(
@@ -210,9 +290,107 @@ class TestTwoSectorForwardModel(unittest.TestCase):
             0.7 * hot_info["unbinned_depths"])
         self.assertEqual(info["cold_fraction"], 0.3)
         self.assertEqual(set(info["sectors"]), {"cold", "hot"})
+        np.testing.assert_allclose(info["cold_depths"], cold_depths)
+        np.testing.assert_allclose(info["hot_depths"], hot_depths)
         self.assertFalse(np.array_equal(
             info["sectors"]["cold"]["radii"],
             info["sectors"]["hot"]["radii"]))
+        _, depths, info = self.calculator.compute_depths(
+            model, self.Rs, self.Mp, self.Rp)
+        for sector, name in ((cold, "cold_depths"), (hot, "hot_depths")):
+            _, expected, _ = self.calculator.compute_depths(
+                sector.profile, self.Rs, self.Mp, self.Rp,
+                cloudtop_pressure=sector.cloudtop_pressure,
+                cloud_fraction=sector.cloud_fraction,
+                scattering_factor=sector.scattering_factor,
+                scattering_slope=sector.scattering_slope)
+            np.testing.assert_array_equal(info[name], expected)
+        np.testing.assert_array_equal(
+            depths, 0.3 * info["cold_depths"] + 0.7 * info["hot_depths"])
+
+    def test_per_sector_vmrs(self):
+        gases = ["H2O", "CO", "H2"]
+        cold = TerminatorSector(isothermal(900), vmrs=[0.01, 0.001, 0.989])
+        hot = TerminatorSector(isothermal(1400), vmrs=[0.0001, 0.02, 0.9799])
+        model = TwoSectorTerminator(cold, hot, 0.3)
+        args = (self.Rs, self.Mp, self.Rp)
+        _, first, _ = self.calculator.compute_depths(
+            cold.profile, *args, logZ=None, CO_ratio=None, gases=gases, vmrs=cold.vmrs)
+        _, second, _ = self.calculator.compute_depths(
+            hot.profile, *args, logZ=None, CO_ratio=None, gases=gases, vmrs=hot.vmrs)
+        _, depths, _ = self.calculator.compute_depths(
+            model, *args, logZ=None, CO_ratio=None, gases=gases, vmrs=[0.001, 0.001, 0.998])
+        np.testing.assert_array_equal(depths, 0.3 * first + 0.7 * second)
+
+    def test_per_sector_free_retrieval(self):
+        from platon.combined_retriever import CombinedRetriever
+        from platon.terminator import label_by_temperature
+        retriever = CombinedRetriever()
+        gases = ["H2O", "CO", "H2"]
+        vmrs = np.array([[0.01, 0.001, 0.989], [0.0001, 0.02, 0.9799]])
+        model = TwoSectorTerminator(
+            TerminatorSector(isothermal(900), vmrs=vmrs[0]),
+            TerminatorSector(isothermal(1400), vmrs=vmrs[1]))
+        _, depths, _ = self.calculator.compute_depths(
+            model, self.Rs, self.Mp, self.Rp, logZ=None, CO_ratio=None, gases=gases)
+        for kind in ("log", "clr"):
+            fit_info = retriever.get_default_fit_info(
+                self.Rs, self.Mp, self.Rp, transit_terminator=model,
+                logZ=None, CO_ratio=None, fit_vmr=kind == "log", fit_clr=kind == "clr")
+            for name in ("sector1.T", "sector2.T"):
+                fit_info.add_uniform_fit_param(name, 500, 2000)
+            if kind == "log":
+                fit_info.add_gases_vmr(gases, 1e-8, 1, per_sector=True)
+                abundances = np.log10(vmrs[:, :-1])
+            else:
+                fit_info.add_gases_clr(gases, per_sector=True)
+                abundances = (np.log(vmrs) - np.log(vmrs).mean(axis=1)[:, None])[:, :-1]
+            params = np.r_[900, 1400, abundances.ravel()]
+            args = (self.calculator, None, fit_info, depths, np.full_like(depths, 1e-6), None, None)
+            retriever._validate_params(fit_info, self.calculator)
+            with self.assertRaisesRegex(ValueError, "transit depths only"):
+                retriever._ln_like(params, *args[:-2], depths, depths)
+            truth = retriever._ln_like(params, *args)
+            self.assertTrue(np.isfinite(truth))
+            swapped = np.r_[params[:2], abundances[::-1].ravel()]
+            self.assertLess(retriever._ln_like(swapped, *args), truth)
+            swapped[:2] = params[1::-1]
+            self.assertAlmostEqual(retriever._ln_like(swapped, *args), truth)
+            names, labelled = label_by_temperature(fit_info, [swapped])
+            self.assertEqual(names, ["cold.T", "hot.T"] + [
+                f"{label}.{kind}_{gas}" for label in ("cold", "hot") for gas in gases[:-1]])
+            np.testing.assert_allclose(labelled[0], params)
+            for start in (2, 4):
+                outside = params.copy()
+                outside[start:start + 2] = -0.1 if kind == "log" else -15
+                self.assertTrue(fit_info._within_limits(outside))
+                self.assertEqual(retriever._ln_like(outside, *args), -np.inf)
+
+    def test_per_sector_gases_on_equilibrium(self):
+        from platon.combined_retriever import CombinedRetriever
+        retriever = CombinedRetriever()
+        vmrs = np.array([[1e-2], [1e-8]])
+        model = TwoSectorTerminator(TerminatorSector(isothermal(900), vmrs=vmrs[0]),
+                                    TerminatorSector(isothermal(1400), vmrs=vmrs[1]))
+        args = (self.Rs, self.Mp, self.Rp)
+        _, depths, _ = self.calculator.compute_depths(model, *args, logZ=1, CO_ratio=0.5, gases=["SO2"])
+        sectors = [self.calculator.compute_depths(s.profile, *args, logZ=1, CO_ratio=0.5, gases=["SO2"],
+                                                  vmrs=s.vmrs)[1] for s in (model.cold, model.hot)]
+        np.testing.assert_array_equal(depths, 0.5 * sectors[0] + 0.5 * sectors[1])
+        _, equilibrium, _ = self.calculator.compute_depths(model.cold.profile, *args, logZ=1, CO_ratio=0.5)
+        self.assertGreater(np.max(np.abs(sectors[0] - equilibrium)), 1e-6)
+
+        fit_info = retriever.get_default_fit_info(
+            self.Rs, self.Mp, self.Rp, transit_terminator=model, logZ=1, CO_ratio=0.5, fit_vmr=True)
+        for name in ("sector1.T", "sector2.T"):
+            fit_info.add_uniform_fit_param(name, 500, 2000)
+        fit_info.add_gases_vmr(["SO2"], 1e-12, 1e-1, per_sector=True)
+        self.assertEqual(fit_info.fit_param_names[2:], ["sector1.log_SO2", "sector2.log_SO2"])
+        params = np.r_[900, 1400, np.log10(vmrs).ravel()]
+        lnlike = lambda p: retriever._ln_like(
+            p, self.calculator, None, fit_info, depths, np.full_like(depths, 1e-6), None, None)
+        self.assertTrue(np.isfinite(lnlike(params)))
+        self.assertLess(lnlike(np.r_[params[:2], params[:1:-1]]), lnlike(params))
 
     def test_identical_and_endpoint_sectors(self):
         sector = TerminatorSector(isothermal(1100), 1e4, 3, 4)
@@ -274,8 +452,8 @@ class TestTwoSectorForwardModel(unittest.TestCase):
             self.skipTest(str(error))
 
         model = TwoSectorTerminator(
-            TerminatorSector(isothermal(900), 1e3, 10, 6),
-            TerminatorSector(isothermal(1400), 1e6, 1, 4), 0.5)
+            TerminatorSector(isothermal(900), 1e3, 10, 6, 0.3),
+            TerminatorSector(isothermal(1400), 1e6, 1, 4, 0.8), 0.5)
         _, depths, _ = self.calculator.compute_depths(
             model, self.Rs, self.Mp, self.Rp)
         errors = np.full_like(depths, 1e-5)
@@ -289,6 +467,8 @@ class TestTwoSectorForwardModel(unittest.TestCase):
             fit_info.add_uniform_fit_param("sector2.T", 500, 2000)
             if fit_fraction:
                 fit_info.add_uniform_fit_param("sector1.fraction", 0, 1)
+            for name in ("sector1.cloud_fraction", "sector2.cloud_fraction"):
+                fit_info.add_gaussian_fit_param(name, 0.2)
             retriever._validate_params(fit_info, self.calculator)
             params = np.array([
                 fit_info.all_params[name].best_guess
@@ -297,6 +477,82 @@ class TestTwoSectorForwardModel(unittest.TestCase):
                 params, self.calculator, None, fit_info,
                 depths, errors, None, None)
             self.assertTrue(np.isfinite(log_likelihood))
+            for name in ("sector1.cloud_fraction", "sector2.cloud_fraction"):
+                for value in (-0.1, 1.1):
+                    outside = params.copy()
+                    outside[fit_info.fit_param_names.index(name)] = value
+                    self.assertEqual(retriever._ln_like(
+                        outside, self.calculator, None, fit_info,
+                        depths, errors, None, None), -np.inf)
+
+    def test_time_shift_retrieval(self):
+        from platon.combined_retriever import CombinedRetriever
+        from platon.terminator import label_by_temperature
+        retriever = CombinedRetriever()
+        for cold_leads in (True, False):
+            model = TwoSectorTerminator(
+                TerminatorSector(isothermal(900), 1e3, cloud_fraction=0.6),
+                TerminatorSector(isothermal(1400), 1e6, cloud_fraction=0.3), cold_leads=cold_leads)
+            _, depths, info = self.calculator.compute_depths(
+                model, self.Rs, self.Mp, self.Rp)
+            self.assertEqual(set(info), {"cold_depths", "hot_depths"})
+            leading, trailing = info["cold_depths"], info["hot_depths"]
+            if not cold_leads:
+                leading, trailing = trailing, leading
+            shifts = limb_time_shifts(leading, trailing, self.Rs, A_ORBIT, 259200, 0.4)
+            errors = np.full_like(depths, 1e-5)
+            fit_info = retriever.get_default_fit_info(
+                self.Rs, self.Mp, self.Rp, transit_terminator=model,
+                time_shifts=shifts + 7, time_shift_errors=np.ones_like(shifts),
+                a=A_ORBIT, period=259200, b=0.4,
+                transit_offsets={"depth_offset": (0, len(depths))},
+                time_shift_offsets={"t0_offset": (0, len(depths))})
+            for name in ("sector1.T", "sector2.T"):
+                fit_info.add_uniform_fit_param(name, 500, 2000)
+            fit_info.add_uniform_fit_param("t0_offset", -20, 20)
+            fit_info.all_params["depth_offset"].best_guess = 3e-5
+            retriever._validate_params(fit_info, self.calculator)
+            params = [fit_info._get(name) for name in fit_info.fit_param_names]
+            names, labelled = label_by_temperature(fit_info, [params])
+            self.assertEqual(names, ["morning.T", "evening.T", "t0_offset"])
+            np.testing.assert_array_equal(labelled, [params])
+            args = (self.calculator, None, fit_info, depths + 3e-5, errors, None, None)
+            wrong = retriever._ln_like(params, *args)
+            params[-1] = 7
+            truth = retriever._ln_like(params, *args)
+            self.assertTrue(np.isfinite(truth))
+            self.assertAlmostEqual(truth - wrong, len(shifts) * 7**2 / 2)
+            _, best, _, _, _ = retriever._ln_like(params, *args, ret_best_fit=True)
+            np.testing.assert_allclose(best["time_shifts"], shifts + 7)
+            leading, trailing = best["cold_depths"], best["hot_depths"]
+            if not cold_leads:
+                leading, trailing = trailing, leading
+            np.testing.assert_allclose(best["time_shifts"],
+                limb_time_shifts(leading, trailing, self.Rs, A_ORBIT, 259200, 0.4) + 7)
+            fit_info.all_params["time_shift_coefficients"].best_guess = np.full(len(shifts), 1e4)
+            _, best, _, _, _ = retriever._ln_like(params, *args, ret_best_fit=True)
+            np.testing.assert_allclose(best["time_shifts"], 7 + 1e4 * (np.sqrt(trailing) - np.sqrt(leading)))
+            fit_info.all_params["time_shift_coefficients"].best_guess = None
+            fit_info.add_uniform_fit_param("sector1.fraction", 0, 1)
+            with self.assertRaises(ValueError):
+                retriever._validate_params(fit_info, self.calculator)
+
+    def test_time_shift_depths_per_visit(self):
+        model = TwoSectorTerminator(TerminatorSector(isothermal(900)),
+                                    TerminatorSector(isothermal(1400)))
+        args = (model, self.Rs, self.Mp, self.Rp)
+        _, first, first_info = self.calculator.compute_depths(
+            *args, T_star=5000, T_het=4000, het_cov_frac=0.1)
+        _, second, second_info = self.calculator.compute_depths(
+            *args, T_star=5000, T_het=4000, het_cov_frac=0.2)
+        for full_output in (False, True):
+            _, depths, info = self.calculator.compute_depths(
+                *args, T_star=5000, T_het=4000, het_cov_frac=[0.2, 0.1, 0.2],
+                full_output=full_output)
+            np.testing.assert_allclose(depths, [second[0], first[1], second[2]])
+            for name in ("cold_depths", "hot_depths"):
+                np.testing.assert_allclose(info[name], [second_info[name][0],
+                                           first_info[name][1], second_info[name][2]])
 
     def test_guillot_retrieval_likelihood(self):
         try:

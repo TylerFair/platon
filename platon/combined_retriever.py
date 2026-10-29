@@ -1,7 +1,9 @@
 import copy
+import functools
 
 import numpy as np
 import scipy.special
+import scipy.stats
 import emcee
 from dynesty import NestedSampler
 import dynesty.utils
@@ -13,11 +15,12 @@ from ._atmosphere_solver import DEFAULT_OPACITIES
 from .fit_info import FitInfo
 
 from .constants import M_jup, R_jup, R_earth, M_earth, R_sun
-from ._params import _UniformParam
+from ._params import _UniformParam, _GaussianParam
 from .errors import AtmosphereError
 from ._output_writer import write_param_estimates_file
 from .TP_profile import Profile
-from .terminator import TwoSectorTerminator, label_by_temperature
+from .terminator import TwoSectorTerminator, label_by_temperature, limb_time_shifts, \
+    report_time_shift_offsets
 from .retrieval_result import RetrievalResult
 
 
@@ -33,6 +36,23 @@ def _include_opacities(fit_info):
     extra = [g for g in getattr(fit_info, "gases", [])
              if g not in default and g not in ["H2", "He", "H2-He", "N2", "O2"]]
     return default + extra
+
+# Nodes spanning the prior range of an integrated-out error_excess.  The
+# integrand is first evaluated at every EXCESS_REFINE-th node; only the cells
+# of that coarse grid within EXCESS_MARGIN nats of its maximum (and their
+# neighbours) are filled in to the full grid, since the rest of the integral
+# is below exp(-EXCESS_MARGIN) of it.
+N_EXCESS_NODES = 2049
+EXCESS_REFINE = 32
+EXCESS_MARGIN = 40.0
+assert (N_EXCESS_NODES - 1) % EXCESS_REFINE == 0
+# err**2 + s**2 at those nodes and half the sum of its log, which depend only
+# on the data errors and the prior: kept for a few error arrays
+_EXCESS_VARIANCES = {}
+# Steepest allowed haze slope (cross section ~ wavelength**-scatt_slope), as a
+# fitted upper limit or a fixed value
+MAX_SCATT_SLOPE = 15
+
 
 class CombinedRetriever:
     def pretty_print(self, fit_info):
@@ -76,6 +96,10 @@ class CombinedRetriever:
         terminator = None if terminator_param is None else \
             terminator_param.best_guess
 
+        if fit_info._get("time_shifts") is not None and (terminator is None or
+                "sector1.fraction" in fit_info.fit_param_names or fit_info._get("sector1.fraction") != 0.5):
+            raise ValueError("time_shifts require a transit_terminator with sector1.fraction fixed at 0.5")
+
         if terminator is not None:
             cloud_fraction = fit_info.all_params["cloud_fraction"].best_guess
             if cloud_fraction != 1 or \
@@ -91,6 +115,23 @@ class CombinedRetriever:
         else:
             if fit_info.all_params["log_scatt_factor"].best_guess != 0:
                 raise ValueError("log scattering factor must be 0 if using Mie scattering")
+
+        slopes = fit_info._get("time_shift_slopes") if "time_shift_slopes" in fit_info.all_params else None
+        if slopes:
+            basis = fit_info._get("time_shift_slope_basis")
+            shifts = fit_info._get("time_shifts")
+            if basis is None or shifts is None or np.shape(basis) != np.shape(shifts):
+                raise ValueError("time_shift_slopes need time_shifts and a time_shift_slope_basis "
+                                 "with one value per time shift")
+
+        for name, param in fit_info.all_params.items():
+            if name.split(".")[-1] != "scatt_slope":
+                continue
+            fitted = name in fit_info.fit_param_names and isinstance(param, _UniformParam)
+            upper = param.high_lim if fitted else param.best_guess
+            if upper > MAX_SCATT_SLOPE:
+                raise ValueError("{} {} {} exceeds the maximum haze slope {}".format(
+                    name, "upper limit" if fitted else "value", upper, MAX_SCATT_SLOPE))
 
         uniform_params = [(name, fit_info.all_params[name])
                           for name in fit_info.fit_param_names
@@ -121,10 +162,12 @@ class CombinedRetriever:
                 for name in fit_info.fit_param_names]
         params = fit_info._interpret_param_array(best)
         sectors = terminator.sectors_from_params(params)
+        P_quench = 10**params["log_P_quench"]
         for sector in sectors:
             calculator._validate_params(
                 sector.profile.temperatures, params["logZ"],
-                params["CO_ratio"], sector.cloudtop_pressure)
+                params["CO_ratio"], sector.cloudtop_pressure,
+                sector.profile.pressures, P_quench)
         for name, param in uniform_params:
             if name not in (
                     "logZ", "CO_ratio", "sector1.log_cloudtop_P",
@@ -139,7 +182,8 @@ class CombinedRetriever:
                         name == f"{label}.log_cloudtop_P" else \
                         sector.cloudtop_pressure
                     calculator._validate_params(
-                        sector.profile.temperatures, logZ, ratio, cloudtop)
+                        sector.profile.temperatures, logZ, ratio, cloudtop,
+                        sector.profile.pressures, P_quench)
 
     @staticmethod
     def _offset_names(fit_info):
@@ -152,14 +196,426 @@ class CombinedRetriever:
         return names
 
     @staticmethod
+    def _excess_squared(params_dict, kind, n_points):
+        """What adds to each squared error of the kind's data: error_excess
+        squared (depths only), plus each excess in params_dict[kind +
+        "_error_excesses"] squared over its index range."""
+        squared = np.full(n_points, 0.0 if kind == "time_shift" else params_dict["error_excess"]**2,
+                          dtype=float)
+        for name, (start, end) in (params_dict.get(kind + "_error_excesses") or {}).items():
+            squared[start:end] += params_dict[name]**2
+        return squared
+
+    @staticmethod
+    def _apply_slopes(shifts, params_dict):
+        """Adds each slope in params_dict["time_shift_slopes"], times its
+        range of time_shift_slope_basis, to the model time shifts, in place."""
+        for name, (start, end) in (params_dict.get("time_shift_slopes") or {}).items():
+            shifts[start:end] += params_dict[name] * params_dict["time_shift_slope_basis"][start:end]
+
+    @staticmethod
     def _apply_offsets(depths, params_dict, kind):
         """Adds each named offset in params_dict[kind + "_offsets"] (kind is
-        "transit" or "eclipse") to its index range of the calculated depths,
+        "transit", "eclipse" or "time_shift") to its index range of the model,
         in place."""
         offsets = params_dict.get(kind + "_offsets")
         if offsets is not None:
             for name, (start, end) in offsets.items():
                 depths[start:end] += params_dict[name]
+
+    @staticmethod
+    def _marginalize(fit_info):
+        """Returns a copy of fit_info that does not sample the fitted offsets
+        or the fitted error excesses (error_excess and the per-range ones)
+        with uniform priors; _ln_like integrates them out over their priors
+        instead (see _nuisance_ln_like), so the evidence and the posterior of
+        every other parameter are unchanged.  Returns fit_info itself if there
+        is nothing to integrate out."""
+        offsets, excesses = set(), {"error_excess"}
+        for kind in ("transit", "eclipse", "time_shift"):
+            for names, key in ((offsets, kind + "_offsets"), (excesses, kind + "_error_excesses")):
+                param = fit_info.all_params.get(key)
+                if param is not None and param.best_guess is not None:
+                    names.update(param.best_guess)
+        param = fit_info.all_params.get("time_shift_slopes")
+        slopes = set(param.best_guess) if param is not None and param.best_guess is not None else set()
+        for name in slopes & set(fit_info.fit_param_names):
+            if not isinstance(fit_info.all_params[name], _GaussianParam):
+                raise ValueError("Fit time-shift slope {} with a Gaussian prior: a flat prior "
+                                 "absorbs the limb-asymmetry signal".format(name))
+        marginal = [name for name in fit_info.fit_param_names
+                    if name in offsets or name in slopes or (name in excesses and isinstance(
+                        fit_info.all_params[name], _UniformParam) and
+                        np.isfinite(fit_info.all_params[name].high_lim))]
+        depth_excesses = set()
+        for kind in ("transit", "eclipse"):
+            param = fit_info.all_params.get(kind + "_error_excesses")
+            if param is not None and param.best_guess is not None:
+                depth_excesses.update(param.best_guess)
+        if "error_excess" in marginal and depth_excesses & set(marginal):
+            raise ValueError("Fit either error_excess or per-range depth error excesses, not both")
+        if not marginal:
+            return fit_info
+        reduced = copy.deepcopy(fit_info)
+        reduced.fit_param_names = [name for name in fit_info.fit_param_names
+                                   if name not in marginal]
+        reduced.marginal_params = marginal
+        return reduced
+
+    @staticmethod
+    def _log_ndtr_diff(high, low):
+        """log(Phi(high) - Phi(low)) for high > low, accurate in both tails."""
+        flip = low > 0
+        high, low = np.where(flip, -low, high), np.where(flip, -high, low)
+        log_high = scipy.special.log_ndtr(high)
+        return log_high + np.log(-np.expm1(scipy.special.log_ndtr(low) - log_high))
+
+    @staticmethod
+    def _nuisance_ln_like(fit_info, params_dict, blocks):
+        """Gaussian log likelihood with fit_info.marginal_params integrated out
+        over their priors.  blocks maps each data kind to (model - data,
+        errors), computed with those offsets and error excesses at 0.
+
+        The model is linear in each offset, so its integral is closed form.
+        error_excess, s, adds in quadrature to every transit and eclipse depth
+        error, sqrt(err**2 + s**2); with s uniform it is integrated over
+        N_EXCESS_NODES values of s, taking the log of the integrand as linear
+        between them (_ln_cells).  A per-range excess (kind +
+        "_error_excesses") does the same for the depths in its range only.
+        The depths sharing an integrated excess form a group, and the
+        remaining data (time shifts, or everything) one more; given the
+        excesses the groups are independent, and each offset must lie in one.
+        A time-shift slope (time_shift_slopes, a Gaussian prior on the
+        coefficient of time_shift_slope_basis over its range) is integrated in
+        closed form too, jointly with the offset of the same range if there is
+        one: the slope first, leaving a Gaussian in the offset.  Returns the log
+        likelihood and, per group, (excess name or None, s nodes, log
+        integrand at the nodes, [(offset name or None, model - data, errors,
+        slope or None)] over each offset's or slope's data, slope = (name,
+        basis, prior std))."""
+        marginal = fit_info.marginal_params
+        # Each member is (kind, residuals, errors, [(offset, start, end, slope)])
+        # for a contiguous run of one kind's data, its offsets and slopes indexed
+        # within the run (offset None for a slope with no offset of its own range)
+        members = {None: []}
+        for kind, (residuals, errors) in blocks.items():
+            ranges = []
+            if kind != "time_shift" and "error_excess" in marginal:
+                ranges.append(("error_excess", 0, len(residuals)))
+            ranges += sorted((
+                (name, start, end) for name, (start, end) in
+                (params_dict.get(kind + "_error_excesses") or {}).items()
+                if name in marginal), key=lambda r: r[1])
+            runs, position = [], 0
+            for name, start, end in ranges:
+                if start > position:
+                    runs.append((None, position, start))
+                runs.append((name, start, end))
+                position = end
+            if position < len(residuals) or not runs:
+                runs.append((None, position, len(residuals)))
+            offsets = [(offset, start, end) for offset, (start, end) in
+                       (params_dict.get(kind + "_offsets") or {}).items() if offset in marginal]
+            slopes = {}
+            for slope, (start, end) in (params_dict.get(kind + "_slopes") or {}).items():
+                if slope in marginal:
+                    if any(a < end and b > start and (a, b) != (start, end) for _, a, b in offsets):
+                        raise ValueError("Slope {} must cover exactly its offset's range, or no "
+                                         "offset's".format(slope))
+                    slopes[start, end] = (slope, params_dict[kind + "_slope_basis"][start:end],
+                                          fit_info.all_params[slope].std)
+            offsets += [(None, a, b) for a, b in slopes if (a, b) not in {(a, b) for _, a, b in offsets}]
+            for name, start, end in runs:
+                inside = []
+                for offset, a, b in offsets:
+                    if start <= a and b <= end:
+                        inside.append((offset, a - start, b - start, slopes.get((a, b))))
+                    elif a < end and b > start:
+                        raise ValueError(
+                            "Offset {} spans data with different error excesses, "
+                            "so it cannot be integrated out".format(offset or slopes[a, b][0]))
+                members.setdefault(name, []).append(
+                    (kind, residuals[start:end], errors[start:end], inside))
+
+        ln_like, groups = 0, []
+        for name, group in members.items():
+            if not group:
+                continue
+            if name is None:
+                s = np.zeros(1)
+            else:
+                prior = fit_info.all_params[name]
+                full = np.linspace(prior.low_lim, prior.high_lim, N_EXCESS_NODES)
+                coarse = np.arange(0, N_EXCESS_NODES, EXCESS_REFINE)
+                ln_f, _ = CombinedRetriever._excess_group_terms(
+                    fit_info, group, full, coarse, coarse=True)
+                keep = np.maximum(ln_f[:-1], ln_f[1:]) >= np.max(ln_f) - EXCESS_MARGIN
+                keep = keep | np.r_[keep[1:], False] | np.r_[False, keep[:-1]]
+                index = np.unique(np.concatenate([coarse] + [
+                    np.arange(c * EXCESS_REFINE, (c + 1) * EXCESS_REFINE + 1)
+                    for c in np.flatnonzero(keep)]))
+                terms, group_offsets = CombinedRetriever._excess_group_terms(
+                    fit_info, group, full, index)
+                # Cell widths in units of the full grid's spacing: log(1) = 0 where refined
+                ln_like += scipy.special.logsumexp(CombinedRetriever._ln_cells(terms)
+                                                   + np.log(np.diff(index))) \
+                    - np.log(N_EXCESS_NODES - 1)
+                groups.append((name, full[index], terms, group_offsets))
+                continue
+            if name is None:
+                # Sequential sums, in this order, as the batched likelihood
+                # reproduces them bit for bit
+                chi2, ln_errors, counts = np.zeros(3)
+                for kind, residuals, errors, _ in group:
+                    first = np.zeros(len(residuals), int)
+                    chi2 += np.bincount(first, (residuals / errors)**2, 1)[0]
+                    ln_errors += np.bincount(first, np.log(errors), 1)[0]
+                    counts += len(residuals)
+                terms = np.full(1, -0.5 * chi2 - ln_errors - 0.5 * counts * np.log(2 * np.pi))
+            group_offsets = []
+            for kind, residuals, errors, inside in group:
+                for offset, start, end, slope in inside:
+                    r, e = residuals[start:end], errors[start:end]
+                    if len(r) == 0:
+                        raise ValueError("Offset {} covers no data".format(offset))
+                    W, R = CombinedRetriever._offset_sums(r, e, s)
+                    if slope is not None:
+                        Sx, Sxx, Rx = CombinedRetriever._slope_sums(r, e, *slope[1:])
+                        terms = terms + 0.5 * Rx**2 / Sxx - np.log(slope[2] * np.sqrt(Sxx))
+                        if offset is None:
+                            group_offsets.append((None, r, e, slope))
+                            continue
+                        W, R = W - Sx**2 / Sxx, R - Rx * Sx / Sxx
+                    prior = fit_info.all_params[offset]
+                    mean, std = R / W, 1 / np.sqrt(W)
+                    terms = terms + 0.5 * R * mean + np.log(np.sqrt(2 * np.pi) * std)
+                    if isinstance(prior, _GaussianParam):
+                        terms += scipy.stats.norm.logpdf(
+                            mean, prior.best_guess, np.hypot(std, prior.std))
+                    else:
+                        terms += CombinedRetriever._log_ndtr_diff(
+                            (prior.high_lim - mean) / std, (prior.low_lim - mean) / std) \
+                            - np.log(prior.high_lim - prior.low_lim)
+                    group_offsets.append((offset, r, e, slope))
+            ln_like += terms[0]
+            groups.append((name, s, terms, group_offsets))
+        return ln_like, groups
+
+    @staticmethod
+    def _excess_group_terms(fit_info, group, full, index, coarse=False):
+        """Log integrand of an error-excess group (members as in
+        _nuisance_ln_like) at the nodes full[index] (sorted indices into the
+        full node grid; coarse: index is every EXCESS_REFINE-th node), with its
+        integrated offsets' closed-form terms, and [(offset, model - data,
+        errors)]."""
+        terms = np.zeros(len(index))
+        rows = []
+        for kind, residuals, errors, _ in group:
+            entry = CombinedRetriever._excess_cache(errors, full)
+            inverse = entry["coarse"] if coarse else entry["inverse"][index]
+            rows.append(dict(entry, rows=inverse))
+            terms += -0.5 * (inverse @ residuals**2) \
+                - entry["half_ln"][index] - 0.5 * len(residuals) * np.log(2 * np.pi)
+        group_offsets = []
+        for (kind, residuals, errors, inside), entry in zip(group, rows):
+            for offset, start, end, slope in inside:
+                r, e = residuals[start:end], errors[start:end]
+                if len(r) == 0:
+                    raise ValueError("Offset {} covers no data".format(offset))
+                if (start, end) not in entry["sums"]:
+                    entry["sums"][start, end] = entry["inverse"][:, start:end].sum(axis=1)
+                W = entry["sums"][start, end][index]
+                R = -(entry["rows"][:, start:end] @ r)
+                if slope is not None:   # the slope first, at every node
+                    inverse = entry["rows"][:, start:end]
+                    basis, prior_std = slope[1:]
+                    Sx, Sxx, Rx = inverse @ basis, inverse @ basis**2 + prior_std**-2, -(inverse @ (basis * r))
+                    terms = terms + 0.5 * Rx**2 / Sxx - np.log(prior_std * np.sqrt(Sxx))
+                    if offset is None:
+                        group_offsets.append((None, r, e, slope))
+                        continue
+                    W, R = W - Sx**2 / Sxx, R - Rx * Sx / Sxx
+                prior = fit_info.all_params[offset]
+                mean, std = R / W, 1 / np.sqrt(W)
+                terms = terms + 0.5 * R * mean + np.log(np.sqrt(2 * np.pi) * std)
+                if isinstance(prior, _GaussianParam):
+                    terms += scipy.stats.norm.logpdf(
+                        mean, prior.best_guess, np.hypot(std, prior.std))
+                else:
+                    terms += CombinedRetriever._log_ndtr_diff(
+                        (prior.high_lim - mean) / std, (prior.low_lim - mean) / std) \
+                        - np.log(prior.high_lim - prior.low_lim)
+                group_offsets.append((offset, r, e, slope))
+        return terms, group_offsets
+
+    @staticmethod
+    def _nuisance_ln_like_rows(fit_info, params_dicts, blocks_rows):
+        """_nuisance_ln_like's log likelihood for each of many rows of one fit.
+        Each row refines its own error-excess nodes, so rows are integrated one
+        at a time, exactly as _nuisance_ln_like integrates them."""
+        return np.array([CombinedRetriever._nuisance_ln_like(fit_info, p, b)[0]
+                         for p, b in zip(params_dicts, blocks_rows)])
+
+    @staticmethod
+    def _excess_cache(errors, full):
+        """What the error-excess integrand needs at the full node grid, which
+        depends only on the data errors and the prior, computed once per error
+        array: 1/(errors**2 + s**2) as a C-contiguous (nodes x data) array and
+        its coarse rows, half the sum of log(errors**2 + s**2) over the data,
+        and each offset's per-node weight sum (filled in on first use)."""
+        key = (np.asarray(errors).tobytes(), full[0], full[-1], len(full))
+        entry = _EXCESS_VARIANCES.get(key)
+        if entry is None:
+            if len(_EXCESS_VARIANCES) >= 16:
+                _EXCESS_VARIANCES.pop(next(iter(_EXCESS_VARIANCES)))
+            variance = errors[None, :]**2 + full[:, None]**2
+            inverse = np.ascontiguousarray(1 / variance)
+            entry = _EXCESS_VARIANCES[key] = dict(
+                inverse=inverse, coarse=np.ascontiguousarray(inverse[::EXCESS_REFINE]),
+                half_ln=0.5 * np.sum(np.log(variance), axis=1), sums={})
+        return entry
+
+    @staticmethod
+    def _slope_sums(residuals, errors, basis, prior_std, s=None):
+        """For a slope x on basis over a range with an offset o: the
+        likelihood's sum of x terms, the slope's precision (with its zero-mean
+        Gaussian prior's) and its linear coefficient, from
+        sum ((model - data) + o + x * basis)**2 / var, var = errors**2 (+ s**2
+        for each value of an error excess s)."""
+        if s is None or np.all(s == 0):
+            weights = errors**-2
+            return (np.sum(weights * basis), np.sum(weights * basis**2) + prior_std**-2,
+                    -np.sum(weights * basis * residuals))
+        weights = 1 / (errors[None, :]**2 + np.asarray(s)[:, None]**2)
+        return weights @ basis, weights @ basis**2 + prior_std**-2, -(weights @ (basis * residuals))
+
+    @staticmethod
+    def _offset_sums(residuals, errors, s):
+        """W = sum 1/var and R = sum (data - model)/var over an offset's data,
+        with var = errors**2 + s**2, for each value of the error excess s."""
+        if np.all(s == 0):
+            weights = errors**-2
+            return np.full(len(s), weights.sum()), np.full(len(s), -(weights * residuals).sum())
+        weights = 1 / (errors[None, :]**2 + np.asarray(s)[:, None]**2)
+        return weights.sum(axis=1), -(weights * residuals[None, :]).sum(axis=1)
+
+    @staticmethod
+    def _ln_cells(ln_f):
+        """ln of the integral of f over each cell between equally spaced
+        nodes, in units of the spacing, with ln f linear in each cell.  This is
+        exact where f rises exponentially, e.g. toward a prior edge."""
+        d = np.diff(ln_f, axis=-1)   # along the nodes (the last axis)
+        a = np.abs(d)
+        small = a < 1e-8
+        a = np.where(small, 1, a)
+        return ln_f[..., :-1] + np.where(
+            small, d / 2, np.maximum(d, 0) + np.log(-np.expm1(-a)) - np.log(a))
+
+    @staticmethod
+    def _draw_nuisance(fit_info, groups, size, mode=False):
+        """size draws of each integrated-out parameter from its posterior given
+        the other parameters, as a dict of arrays; with mode, its conditional
+        mode instead (the most probable error_excess node, then the offsets'
+        mode given it).  groups is from _nuisance_ln_like."""
+        values = {}
+        for name, x, ln_f, offsets in groups:
+            if name is None:
+                excess = np.zeros(size)
+            elif mode:
+                excess = np.full(size, x[np.argmax(ln_f)])
+            else:
+                # a cell, then a point in it from the log-linear density
+                # cells of the (partly refined) node grid, weighted by their widths
+                ln_cells = CombinedRetriever._ln_cells(ln_f) + np.log(np.diff(x))
+                p = np.exp(ln_cells - ln_cells.max())
+                cell = np.random.choice(len(p), size, p=p / p.sum())
+                slope, u = np.diff(ln_f)[cell], np.random.random(size)
+                with np.errstate(all="ignore"):
+                    t = np.where(np.abs(slope) < 1e-8, u, np.where(
+                        slope > 0, 1 + np.log(u + (1 - u) * np.exp(-slope)) / slope,
+                        np.log1p(u * np.expm1(slope)) / slope))
+                excess = x[cell] + t * (x[cell + 1] - x[cell])
+            if name is not None:  # inside the open prior interval
+                excess = values[name] = np.clip(
+                    excess, np.nextafter(x[0], x[-1]), np.nextafter(x[-1], x[0]))
+            for offset, r, e, tilt in offsets:
+                W, R = CombinedRetriever._offset_sums(r, e, excess)
+                if tilt is not None:
+                    Sx, Sxx, Rx = CombinedRetriever._slope_sums(r, e, *tilt[1:], excess)
+                    W, R = W - Sx**2 / Sxx, R - Rx * Sx / Sxx
+                if offset is not None:
+                    prior = fit_info.all_params[offset]
+                    mean, std = R / W, 1 / np.sqrt(W)
+                    if isinstance(prior, _GaussianParam):
+                        var = 1 / (std**-2 + prior.std**-2)
+                        mean = var * (mean / std**2 + prior.best_guess / prior.std**2)
+                        values[offset] = mean if mode else \
+                            np.random.normal(mean, np.sqrt(var), size)
+                    elif mode:  # inside the open prior interval
+                        values[offset] = np.clip(
+                            mean, np.nextafter(prior.low_lim, prior.high_lim),
+                            np.nextafter(prior.high_lim, prior.low_lim))
+                    else:
+                        values[offset] = scipy.stats.truncnorm.rvs(
+                            (prior.low_lim - mean) / std, (prior.high_lim - mean) / std,
+                            loc=mean, scale=std, size=size)
+                if tilt is not None:   # given the offset, a Gaussian
+                    level = values[offset] if offset is not None else 0
+                    mean = (Rx - level * Sx) / Sxx
+                    values[tilt[0]] = mean if mode else np.random.normal(mean, Sxx**-0.5, size)
+        return values
+
+    def _batched_ln_like(self, transit_calc, eclipse_calc, fit_info,
+                         transit_depths, transit_errors, eclipse_depths,
+                         eclipse_errors, zero_opacities=(), batch_size=256):
+        """The batched likelihood for (batch, n_parameters) rows, or None.
+
+        Where the model supports it (transit retrievals with a two-sector or
+        a 1-D terminator and Guillot, isothermal or Madhusudhan & Seager
+        parametric profiles), it returns exactly what _ln_like returns for
+        each row, evaluating many rows per device call; otherwise samplers use
+        _ln_like.
+        """
+        from ._batched_likelihood import BatchedLikelihood
+        try:
+            return BatchedLikelihood(
+                self, transit_calc, eclipse_calc, fit_info,
+                transit_depths, transit_errors, eclipse_depths, eclipse_errors,
+                zero_opacities=zero_opacities, batch_size=batch_size)
+        except (ValueError, AtmosphereError):
+            return None
+
+    def _with_nuisance(self, rows, fit_info, full_fit_info, ln_like, mode=False):
+        """Rows of fit_info's parameters as rows of full_fit_info's, each
+        integrated-out parameter drawn from its posterior given the rest of
+        its row (or, with mode, set to its conditional mode).  Each distinct
+        row costs one model evaluation of ln_like (from _make_ln_like)."""
+        rows = np.array(rows, float, ndmin=2)
+        if fit_info is full_fit_info:
+            return rows
+        unique, inverse = np.unique(rows, axis=0, return_inverse=True)
+        inverse = inverse.ravel()
+        order = np.argsort(inverse, kind="stable")
+        result = np.empty((len(rows), len(full_fit_info.fit_param_names)))
+        for row, where in zip(unique, np.split(
+                order, np.cumsum(np.bincount(inverse))[:-1])):
+            if not np.isfinite(ln_like(row, fit_info=fit_info)):
+                raise ValueError("Posterior sample {} has zero likelihood".format(row))
+            values = {name: np.full(len(where), value)
+                      for name, value in zip(fit_info.fit_param_names, row)}
+            values.update(self._draw_nuisance(
+                fit_info, self.last_nuisance, len(where), mode))
+            result[where] = np.array(
+                [values[name] for name in full_fit_info.fit_param_names]).T
+        return result
+
+    def _best_with_nuisance(self, best, fit_info, full_fit_info, ln_like):
+        """The best-fit row of fit_info's parameters as a row of
+        full_fit_info's, with its integrated-out parameters at their
+        conditional mode, and that row's ln probability."""
+        best = self._with_nuisance(best, fit_info, full_fit_info, ln_like,
+                                   mode=True)[0]
+        return best, full_fit_info._ln_prior(best) + ln_like(best, fit_info=full_fit_info)
 
     @staticmethod
     def _visit_hets(params, n_points):
@@ -188,12 +644,10 @@ class CombinedRetriever:
         return vmrs_with_bkg
 
     @staticmethod
-    def _gaussian_ln_like(model, measured, errors, error_excess):
-        """Log likelihood of each measured depth, with error_excess added in
-        quadrature to its error."""
-        variance = errors**2 + error_excess**2
-        return -0.5 * ((model - measured)**2 / variance +
-                       np.log(2 * np.pi * variance))
+    def _gaussian_ln_like(residuals, errors):
+        """Log likelihood of each residual, given its error (including any
+        error excesses, added in quadrature)."""
+        return -0.5 * (residuals**2 / errors**2 + np.log(2 * np.pi * errors**2))
 
     @staticmethod
     def _check_profile(profile):
@@ -216,6 +670,12 @@ class CombinedRetriever:
             return -np.inf
 
         params_dict = fit_info._interpret_param_array(params)
+        # Integrated-out parameters are evaluated at 0; their residual blocks
+        # are integrated over their priors below
+        marginal = getattr(fit_info, "marginal_params", ())
+        for name in marginal:
+            params_dict[name] = 0
+        blocks = {}
         logZ = params_dict["logZ"]
         CO_ratio = params_dict["CO_ratio"]
         cloud_fraction = params_dict.get("cloud_fraction", 1)
@@ -224,7 +684,8 @@ class CombinedRetriever:
         if not 0 <= cloud_fraction <= 1:
             return -np.inf
         if transit_terminator is not None:
-            if cloud_fraction != 1 or not 0 <= params_dict["sector1.fraction"] <= 1:
+            if cloud_fraction != 1 or any(not 0 <= params_dict[name] <= 1 for name in
+                    ("sector1.fraction", "sector1.cloud_fraction", "sector2.cloud_fraction")):
                 return -np.inf
         if params_dict["Rs"] <= 0 or params_dict["Mp"] <= 0:
             return -np.inf
@@ -232,16 +693,27 @@ class CombinedRetriever:
         gases = None
         vmrs = None
         if params_dict["fit_vmr"] or params_dict["fit_clr"]:
-            assert(logZ is None and CO_ratio is None)
+            # Free VMRs either replace equilibrium chemistry or, with logZ and
+            # CO_ratio also set, are added on top of it
+            on_eq = logZ is not None and CO_ratio is not None and params_dict["fit_vmr"]
+            assert on_eq or (logZ is None and CO_ratio is None)
             gases = fit_info.gases
-            if params_dict["fit_vmr"]:
-                vmrs = [10.**params_dict[f'log_{gas}'] for gas in gases[:-1]]
-                vmrs.append(1 - np.sum(vmrs))
-                if vmrs[-1] < 0: return -np.inf
-            else:
-                clrs = [params_dict[f'clr_{gas}'] for gas in gases[:-1]]
-                vmrs = self.convert_clr_to_vmr(clrs)
-                if np.min(vmrs) < fit_info.clr_low_lim: return -np.inf
+            per_sector = f'sector1.log_{gases[0]}' in params_dict or f'sector1.clr_{gases[0]}' in params_dict
+            if per_sector and measured_eclipse_depths is not None:
+                raise ValueError("Per-sector free abundances apply to transit depths only")
+            for prefix in ("sector1.", "sector2.") if per_sector else ("",):
+                if on_eq:
+                    vmrs = [10.**params_dict[f'{prefix}log_{gas}'] for gas in gases]
+                elif params_dict["fit_vmr"]:
+                    vmrs = [10.**params_dict[f'{prefix}log_{gas}'] for gas in gases[:-1]]
+                    vmrs.append(1 - np.sum(vmrs))
+                    if vmrs[-1] < 0: return -np.inf
+                else:
+                    clrs = [params_dict[f'{prefix}clr_{gas}'] for gas in gases[:-1]]
+                    vmrs = self.convert_clr_to_vmr(clrs)
+                    if np.min(vmrs) < fit_info.clr_low_lim: return -np.inf
+                if prefix:
+                    params_dict[prefix + "vmrs"] = vmrs
 
         if params_dict.get("n") is not None and "log_k" in params_dict:
             ri = params_dict["n"] - 1j * 10**params_dict["log_k"]
@@ -263,7 +735,6 @@ class CombinedRetriever:
             part_size=10.**params_dict["log_part_size"], ri=ri,
             P_quench=10.**params_dict["log_P_quench"],
             full_output=ret_best_fit, zero_opacities=zero_opacities)
-        error_excess = params_dict["error_excess"]
 
         ln_likelihood = np.array([])
         transit_depths = transit_info = eclipse_depths = eclipse_info = None
@@ -289,9 +760,31 @@ class CombinedRetriever:
                     **self._visit_hets(params_dict, len(measured_transit_depths)),
                     **depth_kwargs)
                 self._apply_offsets(transit_depths, params_dict, "transit")
-                ln_likelihood = np.append(ln_likelihood, self._gaussian_ln_like(
-                    transit_depths, measured_transit_depths,
-                    measured_transit_errors, error_excess))
+                residuals = transit_depths - measured_transit_depths
+                errors = np.sqrt(measured_transit_errors**2 + self._excess_squared(
+                    params_dict, "transit", len(residuals)))
+                blocks["transit"] = residuals, errors
+                ln_likelihood = np.append(ln_likelihood, self._gaussian_ln_like(residuals, errors))
+
+                if params_dict.get("time_shifts") is not None:
+                    # sector1 leads (morning), sector2 trails (evening)
+                    leading, trailing = transit_info["cold_depths"], transit_info["hot_depths"]
+                    if not transit_profile.cold_leads:
+                        leading, trailing = trailing, leading
+                    coefficients = params_dict.get("time_shift_coefficients")
+                    shifts = limb_time_shifts(leading, trailing, params_dict["Rs"], params_dict["a"],
+                                              params_dict["period"], params_dict["b"]) \
+                        if coefficients is None else coefficients * (np.sqrt(trailing) - np.sqrt(leading))
+                    self._apply_offsets(shifts, params_dict, "time_shift")
+                    self._apply_slopes(shifts, params_dict)
+                    residuals = shifts - params_dict["time_shifts"]
+                    errors = params_dict["time_shift_errors"]
+                    if params_dict.get("time_shift_error_excesses"):
+                        errors = np.sqrt(errors**2 + self._excess_squared(params_dict, "time_shift", len(errors)))
+                    blocks["time_shift"] = residuals, errors
+                    ln_likelihood = np.append(ln_likelihood, self._gaussian_ln_like(residuals, errors))
+                    if ret_best_fit:
+                        transit_info["time_shifts"] = shifts
 
             if measured_eclipse_depths is not None:
                 if params_dict["profile_type"] == "isothermal" and params_dict["T"] is None:
@@ -305,12 +798,19 @@ class CombinedRetriever:
                     eclipse_profile, T_het=params_dict["T_het"],
                     het_cov_frac=params_dict["het_cov_frac"], **depth_kwargs)
                 self._apply_offsets(eclipse_depths, params_dict, "eclipse")
-                ln_likelihood = np.append(ln_likelihood, self._gaussian_ln_like(
-                    eclipse_depths, measured_eclipse_depths,
-                    measured_eclipse_errors, error_excess))
+                residuals = eclipse_depths - measured_eclipse_depths
+                errors = np.sqrt(measured_eclipse_errors**2 + self._excess_squared(
+                    params_dict, "eclipse", len(residuals)))
+                blocks["eclipse"] = residuals, errors
+                ln_likelihood = np.append(ln_likelihood, self._gaussian_ln_like(residuals, errors))
 
         except AtmosphereError:
             return -np.inf
+
+        if marginal:
+            ln_likelihood, self.last_nuisance = self._nuisance_ln_like(
+                fit_info, params_dict, blocks)
+            ln_likelihood = np.atleast_1d(ln_likelihood)
 
         self.last_params = params
         self.last_ln_like = ln_likelihood.sum()
@@ -348,7 +848,8 @@ class CombinedRetriever:
             np.asarray(profile.temperatures, dtype=np.float64)])
 
     def _make_ln_like(self, data, fit_info, include_condensation,
-                      zero_opacities, transit_throughputs, eclipse_throughputs):
+                      zero_opacities, transit_throughputs, eclipse_throughputs,
+                      sampled_fit_info=None):
         '''Creates the depth calculators for data, which is (transit_bins,
         transit_depths, transit_errors, eclipse_bins, eclipse_depths,
         eclipse_errors), and returns ln_like(params, **kwargs), which calls
@@ -373,11 +874,14 @@ class CombinedRetriever:
             eclipse_calc.change_wavelength_bins(eclipse_bins,
                                                 eclipse_throughputs)
 
-        def ln_like(params, **kwargs):
+        # sampled_fit_info (fit_info with parameters integrated out, if given)
+        # is what ln_like evaluates by default
+        def ln_like(params, fit_info=sampled_fit_info or fit_info, **kwargs):
             return self._ln_like(
                 params, transit_calc, eclipse_calc, fit_info,
                 transit_depths, transit_errors, eclipse_depths, eclipse_errors,
                 zero_opacities=zero_opacities, **kwargs)
+        ln_like.calculators = transit_calc, eclipse_calc
         return ln_like
 
     def _verbose_ln_like(self, ln_like, fit_info):
@@ -397,25 +901,36 @@ class CombinedRetriever:
 
     def _make_result(self, ln_like, fit_info, data, retrieval_type,
                      sampler_result, samples, ln_probs, equal_samples,
-                     num_final_samples):
+                     num_final_samples, full_fit_info=None):
         '''Writes the parameter estimates to a file, then packages the
         sampler's output, the best fit (the sample with the highest ln_prob),
         and the spectra of num_final_samples posterior samples into a
         RetrievalResult.  equal_samples, the equally weighted posterior
-        samples, are shuffled in place and stored in the RetrievalResult.'''
+        samples, are shuffled in place and stored in the RetrievalResult.
+        If fit_info has integrated-out parameters (full_fit_info is the
+        fit before _marginalize), the equal samples get them drawn from their
+        posterior, the best fit their conditional mode, and the result is in
+        terms of full_fit_info.'''
         best_params_arr = samples[np.argmax(ln_probs)]
+        best_ln_prob = np.max(ln_probs)
         np.random.shuffle(equal_samples)
+        if full_fit_info is not None and full_fit_info is not fit_info:
+            equal_samples = self._with_nuisance(equal_samples, fit_info, full_fit_info, ln_like)
+            best_params_arr, best_ln_prob = self._best_with_nuisance(
+                best_params_arr, fit_info, full_fit_info, ln_like)
+            ln_like = functools.partial(ln_like, fit_info=full_fit_info)
+            fit_info = full_fit_info
 
         # Two-sector parameters are reported as cold/hot by temperature
         labels, labelled = label_by_temperature(
             fit_info, np.vstack([equal_samples, best_params_arr]))
         divisors, new_labels = self._get_divisors_labels(
             np.median(labelled[:-1], axis=0), labels)
+        # Time-shift offsets are reported as a grey level and relative offsets
+        report_labels, reported = report_time_shift_offsets(
+            fit_info, new_labels, labelled / divisors)
         write_param_estimates_file(
-            labelled[:-1] / divisors,
-            labelled[-1] / divisors,
-            np.max(ln_probs),
-            new_labels)
+            reported[:-1], reported[-1], best_ln_prob, report_labels)
 
         best_fit_transit_depths, best_fit_transit_info, best_fit_eclipse_depths, \
             best_fit_eclipse_info, _ = ln_like(best_params_arr, ret_best_fit=True)
@@ -478,7 +993,8 @@ class CombinedRetriever:
                   fit_info, nwalkers=50,
                   nsteps=1000, include_condensation=True,
                   num_final_samples=100, zero_opacities=[],
-                  transit_throughputs=None, eclipse_throughputs=None):
+                  transit_throughputs=None, eclipse_throughputs=None,
+                  marginalize_nuisance=True):
         '''Runs affine-invariant MCMC to retrieve atmospheric parameters.
 
         Parameters
@@ -516,16 +1032,24 @@ class CombinedRetriever:
             Throughput of each transit/eclipse bin (e.g. a photometric
             filter's response curve); see
             :func:`~platon.transit_depth_calculator.TransitDepthCalculator.change_wavelength_bins`
+        marginalize_nuisance : bool, optional
+            Integrate the fitted offsets, and error_excess if fitted with a
+            uniform prior, out of the likelihood instead of sampling them
+            (see the "Offsets and error excess" section of the docs).
+            The returned samples include them, drawn from their posterior.
 
         Returns
         -------
         result : RetrievalResult object
         '''
+        full_fit_info = fit_info
+        if marginalize_nuisance:
+            fit_info = self._marginalize(fit_info)
         data = (transit_bins, transit_depths, transit_errors,
                 eclipse_bins, eclipse_depths, eclipse_errors)
         ln_like = self._make_ln_like(
-            data, fit_info, include_condensation, zero_opacities,
-            transit_throughputs, eclipse_throughputs)
+            data, full_fit_info, include_condensation, zero_opacities,
+            transit_throughputs, eclipse_throughputs, fit_info)
 
         sampler = emcee.EnsembleSampler(
             nwalkers, fit_info._get_num_fit_params(),
@@ -547,7 +1071,7 @@ class CombinedRetriever:
         return self._make_result(
             ln_like, fit_info, data, "emcee", sampler_result,
             sampler.flatchain, sampler.flatlnprobability, equal_samples,
-            num_final_samples)
+            num_final_samples, full_fit_info)
 
     @staticmethod
     def _get_divisors_labels(medians, labels):
@@ -582,7 +1106,7 @@ class CombinedRetriever:
                       maxiter=None, maxcall=None, nlive=250,
                       num_final_samples=100, zero_opacities=[],
                       transit_throughputs=None, eclipse_throughputs=None,
-                      **dynesty_kwargs):
+                      marginalize_nuisance=True, **dynesty_kwargs):
         '''Runs nested sampling to retrieve atmospheric parameters.
 
         Parameters
@@ -618,17 +1142,25 @@ class CombinedRetriever:
             Throughput of each transit/eclipse bin (e.g. a photometric
             filter's response curve); see
             :func:`~platon.transit_depth_calculator.TransitDepthCalculator.change_wavelength_bins`
+        marginalize_nuisance : bool, optional
+            Integrate the fitted offsets, and error_excess if fitted with a
+            uniform prior, out of the likelihood instead of sampling them
+            (see the "Offsets and error excess" section of the docs).
+            The returned samples include them, drawn from their posterior.
         **dynesty_kwargs : keyword arguments to pass to dynesty's NestedSampler
 
         Returns
         -------
         result : RetrievalResult object
         '''
+        full_fit_info = fit_info
+        if marginalize_nuisance:
+            fit_info = self._marginalize(fit_info)
         data = (transit_bins, transit_depths, transit_errors,
                 eclipse_bins, eclipse_depths, eclipse_errors)
         ln_like = self._make_ln_like(
-            data, fit_info, include_condensation, zero_opacities,
-            transit_throughputs, eclipse_throughputs)
+            data, full_fit_info, include_condensation, zero_opacities,
+            transit_throughputs, eclipse_throughputs, fit_info)
 
         sampler = NestedSampler(
             self._verbose_ln_like(ln_like, fit_info),
@@ -643,7 +1175,8 @@ class CombinedRetriever:
             result["samples"], result["weights"])
         return self._make_result(
             ln_like, fit_info, data, "dynesty", result,
-            result["samples"], result["logp"], equal_samples, num_final_samples)
+            result["samples"], result["logp"], equal_samples, num_final_samples,
+            full_fit_info)
 
     def run_multinest(self, transit_bins, transit_depths, transit_errors,
                       eclipse_bins, eclipse_depths, eclipse_errors,
@@ -652,11 +1185,13 @@ class CombinedRetriever:
                       maxiter=None, maxcall=None, nlive=250,
                       num_final_samples=100, zero_opacities=[],
                       multinest_kwargs={},
-                      transit_throughputs=None, eclipse_throughputs=None):
+                      transit_throughputs=None, eclipse_throughputs=None,
+                      marginalize_nuisance=True):
         """multinest_kwargs are forwarded to pymultinest.solve/run (e.g.
         sampling_efficiency, const_efficiency_mode, evidence_tolerance,
         multimodal, outputfiles_basename). maxiter sets MultiNest's max_iter
         (0 means unlimited). maxcall is unsupported and must be None.
+        marginalize_nuisance is as for run_dynesty.
         """
         if maxcall is not None:
             raise ValueError(
@@ -669,11 +1204,14 @@ class CombinedRetriever:
                 raise ValueError("maxiter conflicts with multinest_kwargs['max_iter']")
         import pymultinest
 
+        full_fit_info = fit_info
+        if marginalize_nuisance:
+            fit_info = self._marginalize(fit_info)
         data = (transit_bins, transit_depths, transit_errors,
                 eclipse_bins, eclipse_depths, eclipse_errors)
         ln_like = self._make_ln_like(
-            data, fit_info, include_condensation, zero_opacities,
-            transit_throughputs, eclipse_throughputs)
+            data, full_fit_info, include_condensation, zero_opacities,
+            transit_throughputs, eclipse_throughputs, fit_info)
 
         num_dim = fit_info._get_num_fit_params()
         solve_kwargs = dict(
@@ -699,21 +1237,35 @@ class CombinedRetriever:
         equal_samples = analyzer.get_equal_weighted_posterior()[:, :-1]
         return self._make_result(
             ln_like, fit_info, data, "pymultinest", result,
-            result["samples"], result["logp"], equal_samples, num_final_samples)
+            result["samples"], result["logp"], equal_samples, num_final_samples,
+            full_fit_info)
 
     def run_nautilus(self, transit_bins, transit_depths, transit_errors,
                      eclipse_bins, eclipse_depths, eclipse_errors,
                      fit_info, include_condensation=True,
-                     n_live=5000, n_eff=5000, n_networks=16,
+                     n_live=5000, n_eff=10000, n_networks=16,
                      discard_exploration=True, verbose=True,
                      num_final_samples=100, zero_opacities=(),
                      transit_throughputs=None, eclipse_throughputs=None,
-                     **nautilus_kwargs):
+                     marginalize_nuisance=True, **nautilus_kwargs):
         """Run optional Nautilus nested sampling.
 
         Install support with ``pip install "platon[nautilus]"`` or
         ``pip install nautilus-sampler``. Extra keyword arguments are passed
-        directly to :class:`nautilus.Sampler`.
+        directly to :class:`nautilus.Sampler`.  marginalize_nuisance is as
+        for run_dynesty; when it applies, the returned equal-weight samples
+        are n_eff random rows of the resampled posterior, each with its
+        integrated-out parameters drawn from their posterior.  Transit
+        retrievals the batched likelihood supports evaluate each batch of
+        points at once (vectorized), with exactly the scalar likelihood's
+        values, 256 points per batch unless n_batch is given.
+
+        The defaults follow the Nautilus documentation and PLATON tests:
+        n_eff=10000 (a log-evidence error of about 0.01) and
+        discard_exploration=True for unbiased estimates; 16 networks, since
+        more networks need fewer likelihood calls; and 5,000 live points,
+        since with 1,000 a two-solution HAT-P-18 b retrieval missed the
+        narrower, higher-likelihood solution that 5,000 found.
         """
         try:
             from nautilus import Sampler
@@ -723,14 +1275,31 @@ class CombinedRetriever:
                 'package. Install it with pip install "platon[nautilus]" '
                 'or pip install nautilus-sampler.') from error
 
+        full_fit_info = fit_info
+        if marginalize_nuisance:
+            fit_info = self._marginalize(fit_info)
         data = (transit_bins, transit_depths, transit_errors,
                 eclipse_bins, eclipse_depths, eclipse_errors)
         ln_like = self._make_ln_like(
-            data, fit_info, include_condensation, zero_opacities,
-            transit_throughputs, eclipse_throughputs)
+            data, full_fit_info, include_condensation, zero_opacities,
+            transit_throughputs, eclipse_throughputs, fit_info)
+
+        # Where it applies, evaluate Nautilus's batches of points at once;
+        # the likelihood values, and so the run, are unchanged
+        transform_prior = fit_info._from_unit_interval_array
+        nautilus_ln_like = ln_like
+        if transit_throughputs is None and eclipse_throughputs is None:
+            batched = self._batched_ln_like(
+                *ln_like.calculators, fit_info, transit_depths, transit_errors,
+                eclipse_depths, eclipse_errors, zero_opacities)
+            if batched is not None:
+                transform_prior = fit_info._from_unit_interval_batch
+                nautilus_ln_like = batched
+                nautilus_kwargs["vectorized"] = True
+                nautilus_kwargs.setdefault("n_batch", 256)
 
         sampler = Sampler(
-            fit_info._from_unit_interval_array, ln_like,
+            transform_prior, nautilus_ln_like,
             n_dim=fit_info._get_num_fit_params(),
             n_live=n_live, n_networks=n_networks, **nautilus_kwargs)
         success = sampler.run(
@@ -749,9 +1318,14 @@ class CombinedRetriever:
             "success": success,
         }
         equal_samples = dynesty.utils.resample_equal(samples, result["weights"])
+        if fit_info is not full_fit_info:
+            # Each row's integrated-out parameters cost a model evaluation
+            np.random.shuffle(equal_samples)
+            equal_samples = equal_samples[:int(n_eff)]
         return self._make_result(
             ln_like, fit_info, data, "nautilus", result,
-            samples, result["logp"], equal_samples, num_final_samples)
+            samples, result["logp"], equal_samples, num_final_samples,
+            full_fit_info)
 
     @staticmethod
     def get_default_fit_info(Rs, Mp, Rp, T=None, logZ=0, CO_ratio=0.53, log_CH4_mult=0,
@@ -765,12 +1339,17 @@ class CombinedRetriever:
                              n=None, log_k=-np.inf,
                              log_P_quench=-99,
                              transit_offsets=None, eclipse_offsets=None,
+                             transit_error_excesses=None, eclipse_error_excesses=None,
                              fit_vmr=False, fit_clr=False,
                              profile_type = 'isothermal',
                              transit_profile_type = 'isothermal',
                              transit_terminator=None,
                              stellar_grid=None, logg_star=4.5, feh_star=0.,
                              transit_visits=None,
+                             time_shifts=None, time_shift_errors=None, period=None, b=None,
+                             time_shift_offsets=None, time_shift_coefficients=None,
+                             time_shift_slopes=None, time_shift_slope_basis=None,
+                             time_shift_error_excesses=None,
                              **profile_kwargs):
         '''Get a :class:`.FitInfo` object filled with best guess values.  A few
         parameters are required, but others can be set to default values if you
@@ -795,7 +1374,9 @@ class CombinedRetriever:
             quadrature to every measured error: the likelihood uses
             sqrt(error**2 + error_excess**2).  Fit for it (e.g. with a
             uniform prior from 0 to 1e-4) to account for underestimated
-            errors or scatter the model cannot explain.
+            errors or scatter the model cannot explain; with a uniform prior
+            the retrievers integrate it out of the likelihood.  Errors are
+            only ever inflated this way, in quadrature, never by a factor.
         transit_offsets : dict, optional
             Per-instrument offsets for transit data, as a dict mapping each
             offset parameter name to the (start, end) indices of the data it
@@ -810,6 +1391,52 @@ class CombinedRetriever:
         eclipse_offsets : dict, optional
             Same as above, but for eclipse depths.  A name may appear in
             both transit_offsets and eclipse_offsets to share one offset.
+        transit_error_excesses, eclipse_error_excesses : dict, optional
+            Per-instrument error excesses, in the same form as the offsets,
+            e.g. {"excess_niriss": (0, 1010), "excess_nrs": (1010, 2397)}:
+            each adds in quadrature to the errors of its range, on top of
+            error_excess.  Each name becomes a parameter with a default value
+            of 0; fit one with a uniform prior and the retrievers integrate it
+            out like error_excess.  Fit either error_excess or these, not
+            both, and keep each integrated offset within one range (or none).
+        time_shift_error_excesses : dict, optional
+            The same for the time shifts (in seconds): e.g. one per visit, each
+            added in quadrature to the time-shift errors of its range and, with
+            a uniform prior, integrated out together with that range's
+            time-shift offset and slope.  error_excess never applies to them.
+        time_shifts, time_shift_errors : array, optional
+            Fitted mid-transit times minus a reference time, and their errors,
+            in seconds, one per transit point from the same bins and light-curve
+            fits as the depths.  Require transit_terminator with sector1.fraction
+            fixed at 0.5; sector1 is leading (morning), sector2 trailing (evening).
+            Also require Rs and a (semi-major axis in m, passed as a keyword,
+            as for Guillot profiles), period and b.
+        period, b : float, optional
+            Orbital period in seconds and impact parameter for time shifts.
+        time_shift_offsets : dict, optional
+            Like transit_offsets, in seconds, added to model shifts.  Each is
+            the true mid-transit time minus the reference time for its range;
+            fit it unless the reference is the true mid-transit time.
+
+            The retrievers integrate every fitted offset, and error_excess if
+            fitted with a uniform prior, out of the likelihood rather than
+            sampling it (see their marginalize_nuisance argument).
+        time_shift_slopes, time_shift_slope_basis : dict and array, optional
+            Per-visit chromatic slopes in the time shifts, e.g. from spot
+            crossings too weak to detect in the light curves: each name maps to
+            the (start, end) range of one visit, and adds name *
+            time_shift_slope_basis (one value per transit point, e.g. ln of the
+            wavelength minus its weighted mean over the visit) to the model
+            shifts there.  Each name becomes a parameter with a default value of
+            0; fit one only with a zero-mean Gaussian prior sized to what an
+            undetected spot can do (a flat prior absorbs the limb-asymmetry
+            signal), and the retrievers integrate it out in closed form, jointly
+            with the time-shift offset of the same range.
+        time_shift_coefficients : array, optional
+            Calibrated shift per unit trailing-minus-leading radius, in s per
+            stellar radius, one per transit point (e.g. from injecting a small
+            limb asymmetry into the light-curve fits).  If given, these replace
+            the Mukherjee et al. (2026) prescription.
         profile_type : string
             "isothermal", "parametric" (Madhusudhan & Seager 2009),
             "radiative_solution" (Line et al 2013), or "guillot" (Guillot
@@ -873,31 +1500,37 @@ class CombinedRetriever:
                         "{}={}".format(name, current, name, value))
                 all_variables[name] = value
 
-        offset_names = set()
-        for kind, offsets in (("transit", transit_offsets),
-                              ("eclipse", eclipse_offsets)):
-            if offsets is None:
+        range_names = {}
+        for kind, what, ranges in (
+                ("transit", "offsets", transit_offsets),
+                ("eclipse", "offsets", eclipse_offsets),
+                ("time_shift", "offsets", time_shift_offsets),
+                ("transit", "error excesses", transit_error_excesses),
+                ("eclipse", "error excesses", eclipse_error_excesses),
+                ("time_shift", "slopes", time_shift_slopes),
+                ("time_shift", "error excesses", time_shift_error_excesses)):
+            if ranges is None:
                 continue
-            for name, index_range in offsets.items():
-                if name in all_variables and name not in offset_names:
+            for name, index_range in ranges.items():
+                if name in all_variables and range_names.get(name) != what:
                     raise ValueError(
-                        "Offset name {} conflicts with an existing "
-                        "parameter".format(name))
+                        "Name {} in {} {} conflicts with an existing "
+                        "parameter".format(name, kind, what))
                 if len(index_range) != 2 or \
                    not 0 <= index_range[0] < index_range[1]:
                     raise ValueError(
-                        "Range for offset {} must be (start, end) with "
+                        "Range for {} must be (start, end) with "
                         "0 <= start < end".format(name))
                 all_variables[name] = 0
-                offset_names.add(name)
+                range_names[name] = what
 
-            sorted_ranges = sorted(offsets.items(), key=lambda kv: kv[1][0])
+            sorted_ranges = sorted(ranges.items(), key=lambda kv: kv[1][0])
             for (name1, range1), (name2, range2) in zip(
                     sorted_ranges, sorted_ranges[1:]):
                 if range1[1] > range2[0]:
                     raise ValueError(
-                        "{} offsets {} {} and {} {} overlap".format(
-                            kind, name1, tuple(range1), name2, tuple(range2)))
+                        "{} {} {} {} and {} {} overlap".format(
+                            kind, what, name1, tuple(range1), name2, tuple(range2)))
         
         for visit in transit_visits or {}:
             for name in _HET_PARAMS:

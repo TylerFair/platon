@@ -5,7 +5,7 @@ import dynesty
 from .constants import METRES_TO_UM, BAR_TO_PASCALS
 from .retrieval_result import RetrievalResult
 from .TP_profile import Profile
-from .terminator import label_by_temperature
+from .terminator import label_by_temperature, report_time_shift_offsets
 
 default_style = ['default',
     {   'font.size': 12,
@@ -193,8 +193,11 @@ class Plotter:
         """
         assert(isinstance(retrieval_result, RetrievalResult))
         # Nested samplers have weighted samples, which are more precise than
-        # equally weighted samples drawn from them
-        if retrieval_result.retrieval_type in ("dynesty", "nautilus"):
+        # equally weighted samples drawn from them, unless parameters were
+        # integrated out (then only the equal samples have them)
+        n_params = len(retrieval_result.fit_info.fit_param_names)
+        if retrieval_result.retrieval_type in ("dynesty", "nautilus") and \
+                retrieval_result.samples.shape[1] == n_params:
             samples = retrieval_result.samples
             weights = retrieval_result.weights
         else:
@@ -203,6 +206,8 @@ class Plotter:
 
         # Two-sector parameters are shown as cold/hot by temperature
         labels, samples = label_by_temperature(retrieval_result.fit_info, samples)
+        # Time-shift offsets as a grey level and relative offsets
+        labels, samples = report_time_shift_offsets(retrieval_result.fit_info, labels, samples)
         corner_args = dict(range=[0.99] * samples.shape[1], show_titles=True,
                            labels=labels)
         corner_args.update(args)
