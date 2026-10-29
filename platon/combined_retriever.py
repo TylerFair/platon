@@ -1247,7 +1247,8 @@ class CombinedRetriever:
                      discard_exploration=True, verbose=True,
                      num_final_samples=100, zero_opacities=(),
                      transit_throughputs=None, eclipse_throughputs=None,
-                     marginalize_nuisance=True, **nautilus_kwargs):
+                     marginalize_nuisance=True, streaming_statistics=True,
+                     **nautilus_kwargs):
         """Run optional Nautilus nested sampling.
 
         Install support with ``pip install "platon[nautilus]"`` or
@@ -1259,6 +1260,12 @@ class CombinedRetriever:
         retrievals the batched likelihood supports evaluate each batch of
         points at once (vectorized), with exactly the scalar likelihood's
         values, 256 points per batch unless n_batch is given.
+
+        Streaming shell statistics avoid rescanning all earlier likelihoods
+        after each sampling batch. Full reductions periodically refresh the
+        sums and check the final stopping decision. Floating-point allocation
+        ties may differ; set streaming_statistics=False to use the original
+        summation order throughout. Bounds, priors and likelihoods are unchanged.
 
         The defaults follow the Nautilus documentation and PLATON tests:
         n_eff=10000 (a log-evidence error of about 0.01) and
@@ -1302,9 +1309,17 @@ class CombinedRetriever:
             transform_prior, nautilus_ln_like,
             n_dim=fit_info._get_num_fit_params(),
             n_live=n_live, n_networks=n_networks, **nautilus_kwargs)
-        success = sampler.run(
-            n_eff=n_eff, discard_exploration=discard_exploration,
-            verbose=verbose)
+        statistics = None
+        if streaming_statistics:
+            from ._nautilus_performance import install_streaming_shell_statistics
+            statistics = install_streaming_shell_statistics(sampler)
+        try:
+            success = sampler.run(
+                n_eff=n_eff, discard_exploration=discard_exploration,
+                verbose=verbose)
+        finally:
+            if statistics is not None:
+                statistics.close()
 
         samples, log_weights, logl = map(np.asarray, sampler.posterior())
         result = {
