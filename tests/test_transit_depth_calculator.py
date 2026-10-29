@@ -78,6 +78,17 @@ class TestTransitDepthCalculator(unittest.TestCase):
                 isothermal_profile(T), Rs, Mp, Rp, logZ=0.2, CO_ratio=1.1,
                 T_star=6100)
 
+        # A cold top layer passes the median-T height estimate, but the
+        # hot layers below still make the radii diverge
+        profile = isothermal_profile(3500)
+        temperatures = np.array(profile.temperatures)
+        temperatures[0] = 800
+        with self.assertRaises(AtmosphereError):
+            depth_calculator.compute_depths(
+                Profile.from_arrays(profile.pressures, temperatures),
+                0.75 * R_sun, 0.2 * M_jup, R_jup, logZ=1.5, CO_ratio=0.5,
+                T_star=4700)
+
     def test_bin_wavelengths(self):
         Rp = 7.14e7
         Mp = 7.49e26
@@ -327,7 +338,36 @@ class TestTransitDepthCalculator(unittest.TestCase):
 
         # Infinity should be fine
         calculator.compute_depths(isothermal_profile(T), Rs, Mp, Rp, logZ=logZ, CO_ratio=CO_ratio, cloudtop_pressure=np.inf)
-       
+
+    def test_deep_temperatures_clamped(self):
+        # Out-of-grid temperatures deeper than 10 bar (and below the quench
+        # point) are clamped to the grid; shallower ones are rejected
+        Rs, Mp, Rp = 7e8, 7.49e26, 7.14e7
+        calculator = TransitDepthCalculator()
+        T_min, T_max = calculator.atm.min_temperature, calculator.atm.max_temperature
+        pressures = isothermal_profile(1200).pressures
+
+        def profile(T_deep, below):
+            return Profile(pressures, np.where(pressures > below, T_deep, 1200.))
+
+        def depths(prof, **kwargs):
+            return calculator.compute_depths(prof, Rs, Mp, Rp, logZ=0.5, CO_ratio=0.5, **kwargs)[1]
+
+        for T_deep, T_edge in ((T_max + 2000, T_max), (T_min / 2, T_min)):
+            np.testing.assert_array_equal(depths(profile(T_deep, 2e6)), depths(profile(T_edge, 2e6)))
+            np.testing.assert_array_equal(depths(profile(T_deep, 2e6), P_quench=1e5),
+                                          depths(profile(T_edge, 2e6), P_quench=1e5))
+        hot = profile(T_max + 2000, 2e6)
+        calculator._validate_params(hot.temperatures, 0.5, 0.5, np.inf, hot.pressures)
+        with self.assertRaises(AtmosphereError):
+            calculator._validate_params(hot.temperatures, 0.5, 0.5, np.inf)
+        with self.assertRaises(AtmosphereError):
+            depths(profile(T_max + 2000, 5e5))           # leaves the grid above 10 bar
+        with self.assertRaises(AtmosphereError):
+            depths(hot, P_quench=1e7)                   # at the quench point
+        with self.assertRaises(AtmosphereError):
+            depths(profile(-50., 2e6))                  # non-positive anywhere
+
             
         
 if __name__ == '__main__':

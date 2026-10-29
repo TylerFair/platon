@@ -8,14 +8,28 @@ from .TP_profile import Profile
 GUILLOT_SHARED_PARAMS = ("T_star", "Rs", "a", "Mp", "Rp", "log_k_th", "T_int")
 
 
+def limb_time_shifts(leading_depths, trailing_depths, Rs, a, period, b):
+    """Mid-transit time shifts (s, positive = later) that a spherical-planet
+    light-curve fit measures for leading (morning) and trailing (evening)
+    half-disks with these transit depths: Murphy et al. (2024) eqs. 11 and 20,
+    calibrated in impact parameter b by Mukherjee et al. (2026) eq. 3."""
+    R_L, R_T = np.sqrt(leading_depths), np.sqrt(trailing_depths)
+    R_eff = np.sqrt((np.asarray(leading_depths) + trailing_depths) / 2)
+    shift = (np.sqrt((1 + R_T)**2 - b**2) - np.sqrt((1 + R_L)**2 - b**2)) / 2
+    shift += (np.sqrt(1 - R_L**2) - np.sqrt(1 - R_eff**2)) / 2
+    return shift * Rs * period / (2 * np.pi * a) * (1.221 + 0.079 * b - 0.718 * b**2)
+
+
 @dataclass(frozen=True)
 class TerminatorSector:
-    """One homogeneous sector of a two-sector terminator."""
+    """One sector of a two-sector terminator."""
 
     profile: Profile
     cloudtop_pressure: float = np.inf
     scattering_factor: float = 1
     scattering_slope: float = 4
+    cloud_fraction: float = 1
+    vmrs: list = None
 
     def __post_init__(self):
         if not isinstance(self.profile, Profile):
@@ -24,6 +38,8 @@ class TerminatorSector:
             raise ValueError("cloudtop_pressure must be positive")
         if self.scattering_factor <= 0:
             raise ValueError("scattering_factor must be positive")
+        if not 0 <= self.cloud_fraction <= 1:
+            raise ValueError("cloud_fraction must be between 0 and 1")
 
 
 def sector_temperature(profile):
@@ -37,11 +53,14 @@ def sector_temperature(profile):
 class TwoSectorTerminator:
     """A cold and hot terminator sector combined by projected area.
     Retrievals sample the two sectors as sector1 and sector2 with independent
-    priors; each sample's colder sector is then labelled cold."""
+    priors; each sample's colder sector is then labelled cold.  cold_leads
+    says whether the cold sector is the leading (morning) limb, which matters
+    only for time shifts."""
 
     cold: TerminatorSector
     hot: TerminatorSector
     cold_fraction: float = 0.5
+    cold_leads: bool = True
 
     def __post_init__(self):
         if not isinstance(self.cold, TerminatorSector) or \
@@ -52,10 +71,10 @@ class TwoSectorTerminator:
 
         kind = self.cold.profile.profile_type
         if kind != self.hot.profile.profile_type or \
-           kind not in ("isothermal", "guillot"):
+           kind not in ("isothermal", "guillot", "parametric"):
             raise ValueError(
-                "cold and hot profiles must use the same isothermal or "
-                "Guillot parameterization")
+                "cold and hot profiles must use the same isothermal, "
+                "Guillot or parametric parameterization")
 
         if sector_temperature(self.cold.profile) > sector_temperature(self.hot.profile):
             raise ValueError("cold profile must not be hotter than hot profile")
@@ -74,19 +93,26 @@ class TwoSectorTerminator:
 
     def retrieval_defaults(self):
         """Return the named values used to reconstruct this terminator, with
-        the cold sector as sector1 and the hot one as sector2."""
+        the leading (morning) sector as sector1 and the trailing one as sector2."""
         values = {
             "transit_terminator": self,
-            "sector1.fraction": self.cold_fraction,
+            "sector1.fraction": self.cold_fraction if self.cold_leads else 1 - self.cold_fraction,
         }
-        for label, sector in (("sector1", self.cold), ("sector2", self.hot)):
+        sectors = (self.cold, self.hot) if self.cold_leads else (self.hot, self.cold)
+        for label, sector in zip(("sector1", "sector2"), sectors):
             values[f"{label}.log_cloudtop_P"] = np.log10(
                 sector.cloudtop_pressure)
             values[f"{label}.log_scatt_factor"] = np.log10(
                 sector.scattering_factor)
             values[f"{label}.scatt_slope"] = sector.scattering_slope
+            values[f"{label}.cloud_fraction"] = sector.cloud_fraction
             if self.profile_type == "isothermal":
                 values[f"{label}.T"] = sector.profile.profile_params["T"]
+            elif self.profile_type == "parametric":
+                for name, value in sector.profile.profile_params.items():
+                    if name in ("P1", "P3"):
+                        name, value = "log_" + name, np.log10(value)
+                    values[f"{label}.{name}"] = value
             else:
                 values[f"{label}.beta"] = \
                     sector.profile.profile_params["beta"]
@@ -107,6 +133,10 @@ class TwoSectorTerminator:
         for label in ("sector1", "sector2"):
             if self.profile_type == "isothermal":
                 profile = Profile.isothermal(params[f"{label}.T"])
+            elif self.profile_type == "parametric":
+                profile = Profile.from_params_dict("parametric", {
+                    name[len(label) + 1:]: value for name, value in params.items()
+                    if name.startswith(label + ".")})
             else:
                 profile = Profile.guillot(
                     params["T_star"], params["Rs"], params["a"],
@@ -119,16 +149,18 @@ class TwoSectorTerminator:
                 profile,
                 10**params[f"{label}.log_cloudtop_P"],
                 10**params[f"{label}.log_scatt_factor"],
-                params[f"{label}.scatt_slope"]))
+                params[f"{label}.scatt_slope"],
+                params[f"{label}.cloud_fraction"],
+                params.get(f"{label}.vmrs")))
         return sectors
 
     def from_params(self, params):
         """Build a terminator from a retrieval parameter dictionary, with the
-        colder of sector1 and sector2 as the cold sector."""
+        colder of sector1 and sector2 as cold; sector1 is the leading limb."""
         first, second = self.sectors_from_params(params)
         fraction = params["sector1.fraction"]
         if sector_temperature(first.profile) > sector_temperature(second.profile):
-            return TwoSectorTerminator(second, first, 1 - fraction)
+            return TwoSectorTerminator(second, first, 1 - fraction, cold_leads=False)
         return TwoSectorTerminator(first, second, fraction)
 
 
@@ -138,6 +170,9 @@ def label_by_temperature(fit_info, samples):
     cold_fraction).  Returns (names, samples).  A parameter fitted for only
     one sector keeps its sector name."""
     names = list(fit_info.fit_param_names)
+    if "time_shifts" in fit_info.all_params and fit_info._get("time_shifts") is not None:
+        return [name.replace("sector1.", "morning.").replace("sector2.", "evening.")
+                for name in names], samples
     param = fit_info.all_params.get("transit_terminator")
     if param is None or param.best_guess is None:
         return names, samples
@@ -157,3 +192,39 @@ def label_by_temperature(fit_info, samples):
             labelled[swap, i], labelled[swap, j] = samples[swap, j], samples[swap, i]
             names[i], names[j] = "cold." + name[8:], "hot." + name[8:]
     return names, labelled
+
+
+def report_time_shift_offsets(fit_info, names, samples):
+    """(names, samples) with the fitted time-shift offsets re-expressed for
+    reporting as a grey level and relative offsets, as transit depth offsets
+    are relative to one dataset.  Each visit's offset is the true mid-transit
+    time minus that visit's reference time; the data fix their differences,
+    and the overall level only through the model.  The reference visit is the
+    one holding the depths that have no transit offset (the first visit if
+    none or several do): its offset is reported as t0_grey, and every other
+    visit's as <name>_rel, its offset minus the reference's.  This is the same
+    posterior in other coordinates; fits and models keep the per-visit offsets,
+    so pass a copy of what they use."""
+    if "time_shift_offsets" not in fit_info.all_params:
+        return list(names), samples
+    offsets = fit_info._get("time_shift_offsets") or {}
+    fitted = sorted((name for name in offsets if name in names), key=lambda name: offsets[name][0])
+    if not fitted:
+        return list(names), samples
+    n_points = max(end for _, end in offsets.values())
+    free = np.ones(n_points, bool)
+    for start, end in (fit_info._get("transit_offsets") or {}).values():
+        free[start:end] = False
+    holding = [name for name in fitted if free[slice(*offsets[name])].any()]
+    reference = holding[0] if len(holding) == 1 else fitted[0]
+    names = list(names)
+    samples = np.array(samples, float, ndmin=2)
+    level = samples[:, names.index(reference)].copy()
+    for name in fitted:
+        i = names.index(name)
+        if name == reference:
+            names[i] = "t0_grey"
+        else:
+            samples[:, i] -= level
+            names[i] = name + "_rel"
+    return names, samples

@@ -7,11 +7,23 @@ from ._atmosphere_solver import AtmosphereSolver, DEFAULT_OPACITIES
 from .TP_profile import Profile
 from .terminator import TwoSectorTerminator
 
+# NOTE -- DELIBERATE CHANGE FROM PLATON'S DEFAULT (2026-10-25): transit depths
+# no longer reject a T/P profile just because it leaves the opacity grid's
+# temperature range (100-4000 K) somewhere in the column.  Out-of-grid
+# temperatures deeper than DEEP_CLAMP_PRESSURE and below the quench point are
+# clamped to the grid; anywhere shallower, or at the quench point, the profile
+# is still rejected.  See TransitDepthCalculator._clamp_unprobed.
+DEEP_CLAMP_PRESSURE = 1e6  # Pa (10 bar)
+
 
 class TransitDepthCalculator:
+    # The instance's, from __init__; this for calculators pickled before it existed
+    add_H_minus_absorption = False
+
     def __init__(self, include_condensation=True, ref_pressure=1e5,
                  include_opacities=DEFAULT_OPACITIES,
-                 downsample=1, stellar_grid=None, logg_star=4.5, feh_star=0.):
+                 downsample=1, stellar_grid=None, logg_star=4.5, feh_star=0.,
+                 add_H_minus_absorption=False):
         '''
         All physical parameters are in SI.
 
@@ -28,7 +40,12 @@ class TransitDepthCalculator:
             described in _atmosphere_solver._load_stellar_grid.  Used instead
             of the built-in temperature-only spectra for T_star, T_het and
             T_het2, interpolated to logg_star (cgs) and feh_star.
+        add_H_minus_absorption : bool, optional
+            The default of `compute_depths`' add_H_minus_absorption, so that a
+            retrieval (which never passes it) can include H- bound-free and
+            free-free absorption, e.g. for ultra-hot planets.
         '''
+        self.add_H_minus_absorption = bool(add_H_minus_absorption)
         self.atm = AtmosphereSolver(include_condensation, ref_pressure,
                                     include_opacities, downsample,
                                     stellar_grid, logg_star, feh_star)
@@ -57,13 +74,44 @@ class TransitDepthCalculator:
         """
         self.atm.change_wavelength_bins(bins, throughputs)
 
-    def _validate_params(self, T, logZ, CO_ratio, cloudtop_pressure):
+    def _validate_params(self, T, logZ, CO_ratio, cloudtop_pressure,
+                         pressures=None, P_quench=1e-99):
+        if pressures is not None:
+            T = self._clamp_unprobed(T, pressures, P_quench)
         self.atm._validate_params(T, logZ, CO_ratio, cloudtop_pressure)
+
+    def _clamp_unprobed(self, T_profile, P_profile, P_quench):
+        """NOTE: a deliberate change from PLATON's full-column rejection.
+
+        Clamps out-of-grid temperatures to the opacity grid's range in layers
+        the transmission spectrum cannot see: deeper than DEEP_CLAMP_PRESSURE
+        (10 bar) and deeper than the layers that set the quenched abundances.
+        Rejecting a profile for leaving the grid there would be a hidden
+        prior on the deep atmosphere, not a constraint from the data.  For
+        WASP-94 Ab's Guillot limbs it amounts to requiring T(1000 bar) <
+        4000 K: it rejected 86% of the posterior, although moving the clamp
+        from 4000 to 3500 K changes ln L by at most 0.24 nat when the quench
+        point is unaffected.  Out-of-grid temperatures shallower than that,
+        or at the quench point, are left in place, so that _validate_params
+        still rejects them, as it does non-positive temperatures anywhere.
+        Eclipse depths, which can see deeper, still reject over the full
+        column."""
+        T_profile = np.array(T_profile, dtype=np.float64)
+        P_profile = np.asarray(P_profile, dtype=np.float64)
+        if not np.all(np.isfinite(T_profile)) or np.any(T_profile <= 0):
+            raise AtmosphereError("Invalid temperatures in T/P profile")
+        deep = P_profile > max(DEEP_CLAMP_PRESSURE, P_quench)
+        # Quenched abundances interpolate between the layers bracketing
+        # P_quench, so the first layer below it is not clamped either
+        deep[np.searchsorted(P_profile, P_quench, side="right"):][:1] = False
+        T_profile[deep] = np.clip(T_profile[deep], self.atm.min_temperature,
+                                  self.atm.max_temperature)
+        return T_profile
 
     def compute_depths(self, t_p_profile, star_radius, planet_mass,
                        planet_radius, logZ=0, CO_ratio=0.53, CH4_mult=1,
                        gases=None, vmrs=None,
-                       add_gas_absorption=True, add_H_minus_absorption=False,
+                       add_gas_absorption=True, add_H_minus_absorption=None,
                        add_scattering=True, scattering_factor=1,
                        scattering_slope=4, scattering_ref_wavelength=1e-6,
                        add_collisional_absorption=True,
@@ -99,8 +147,9 @@ class TransitDepthCalculator:
             Multiple applied to equilibrium CH4 abundance, for methane depletion
         add_gas_absorption: float, optional
             Whether gas absorption is accounted for
-        add_H_minus_absorption: float, optional
-            Whether H- bound-free and free-free absorption is added in
+        add_H_minus_absorption: bool, optional
+            Whether H- bound-free and free-free absorption is added in;
+            None (the default) takes the calculator's add_H_minus_absorption
         add_scattering : bool, optional
             whether Rayleigh scattering is taken into account
         scattering_factor : float, optional
@@ -203,8 +252,12 @@ class TransitDepthCalculator:
             atm_abundances, unbinned_depths, unbinned_wavelengths,
             unbinned_correction_factors.  unbinned_depths are already
             corrected for stellar spots (multiplied by
-            unbinned_correction_factors).
+            unbinned_correction_factors).  TwoSectorTerminator also returns
+            binned cold_depths and hot_depths, even if full_output is False
+            (unless cold_fraction is 0 or 1).
        '''
+        if add_H_minus_absorption is None:
+            add_H_minus_absorption = self.add_H_minus_absorption
         hets = [T_star if T_het is None else T_het, 0 if het_cov_frac is None else het_cov_frac,
                 T_star if T_het2 is None else T_het2, 0 if het2_cov_frac is None else het2_cov_frac]
         if any(np.ndim(x) for x in hets):
@@ -219,22 +272,25 @@ class TransitDepthCalculator:
                 visit = np.all(rows == row, axis=1)
                 depths[visit] = visit_depths[visit]
                 info = visit_info if i == 0 else info
+                for name in ("cold_depths", "hot_depths"):
+                    if info is not None and name in info:
+                        info[name][visit] = visit_info[name][visit]
             return wavelengths, depths, info
 
         if isinstance(t_p_profile, TwoSectorTerminator):
             if cloud_fraction != 1:
                 raise ValueError(
                     "cloud_fraction must be 1 for a TwoSectorTerminator; "
-                    "use cold_fraction for its area weighting")
+                    "use each TerminatorSector's cloud_fraction")
             common = dict(
                 logZ=logZ, CO_ratio=CO_ratio, CH4_mult=CH4_mult,
-                gases=gases, vmrs=vmrs,
+                gases=gases,
                 add_gas_absorption=add_gas_absorption,
                 add_H_minus_absorption=add_H_minus_absorption,
                 add_scattering=add_scattering,
                 scattering_ref_wavelength=scattering_ref_wavelength,
                 add_collisional_absorption=add_collisional_absorption,
-                cloud_fraction=1, custom_abundances=custom_abundances,
+                custom_abundances=custom_abundances,
                 T_star=T_star, T_het=T_het, het_cov_frac=het_cov_frac,
                 T_het2=T_het2, het2_cov_frac=het2_cov_frac, ri=ri,
                 frac_scale_height=frac_scale_height,
@@ -251,6 +307,8 @@ class TransitDepthCalculator:
                     scattering_factor=sector.scattering_factor,
                     scattering_slope=sector.scattering_slope,
                     cloudtop_pressure=sector.cloudtop_pressure,
+                    cloud_fraction=sector.cloud_fraction,
+                    vmrs=sector.vmrs if sector.vmrs is not None else vmrs,
                     **common)
 
             fraction = t_p_profile.cold_fraction
@@ -263,7 +321,7 @@ class TransitDepthCalculator:
             _, hot_depths, hot_info = run_sector(t_p_profile.hot)
             depths = fraction * cold_depths + (1 - fraction) * hot_depths
             if not full_output:
-                return cold_wavelengths, depths, None
+                return cold_wavelengths, depths, {"cold_depths": cold_depths, "hot_depths": hot_depths}
 
             info = {
                 name: cold_info[name]
@@ -276,6 +334,7 @@ class TransitDepthCalculator:
                 fraction * cold_info["unbinned_depths"] + \
                 (1 - fraction) * hot_info["unbinned_depths"]
             info["cold_fraction"] = fraction
+            info["cold_depths"], info["hot_depths"] = cold_depths, hot_depths
             info["sectors"] = {"cold": cold_info, "hot": hot_info}
             return cold_wavelengths, depths, info
 
@@ -284,8 +343,9 @@ class TransitDepthCalculator:
                             "platon.TP_profile or a TwoSectorTerminator")
         if cloud_fraction < 0 or cloud_fraction > 1:
             raise ValueError("cloud_fraction must be between 0 and 1")
-        T_profile = np.asarray(t_p_profile.temperatures, dtype=np.float64)
         P_profile = np.asarray(t_p_profile.pressures, dtype=np.float64)
+        T_profile = self._clamp_unprobed(
+            t_p_profile.temperatures, P_profile, P_quench)
 
         prep_kwargs = dict(
             star_radius=star_radius, planet_mass=planet_mass,

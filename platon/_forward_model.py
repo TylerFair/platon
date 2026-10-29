@@ -97,7 +97,7 @@ class ForwardConfig(NamedTuple):
     """Static (hashable) configuration; changing any field recompiles."""
     n_layers: int            # number of levels in the T/P profile
     abund_mode: str          # 'eq', 'vmr', or 'custom'
-    gas_master_idx: tuple    # master indices of fit gases ('vmr' mode)
+    gas_master_idx: tuple    # master indices of fit gases (vmr, or free in eq)
     ch4_idx: int
     el_idx: int
     h_idx: int
@@ -244,6 +244,9 @@ def _layer_log_abundances(cfg, data, sc, inp):
             inp.T_profile, jnp.log10(inp.P_profile))    # (N, M)
         if cfg.ch4_idx >= 0:
             la = la.at[:, cfg.ch4_idx].add(sc[SC_LOG_CH4])
+        if cfg.gas_master_idx:
+            la = la.at[:, jnp.asarray(cfg.gas_master_idx)].set(
+                jnp.log10(inp.vmrs)[None, :])
     elif cfg.abund_mode == "vmr":
         la = jnp.full((N, n_master), LOG_MIN_ABUND, dtype=jnp.float32)
         idx = jnp.asarray(cfg.gas_master_idx, dtype=jnp.int32)
@@ -291,13 +294,14 @@ def _hydrostatic(sc, P_profile, T_profile, mu_profile):
     # dr computed from the exact segment values to avoid FP32 cancellation
     dr = seg / (inv_r[1:] * inv_r[:-1])
 
-    # Unbound-atmosphere diagnostics (same criteria as the FP64 version)
+    # Unbound-atmosphere diagnostics (same criteria as the FP64 version), plus
+    # radii that diverge (1/r <= 0) where the median-T estimate misses it
     R_hill = Rs * (sc[SC_T_STAR_HYDRO] / T_profile[0]) ** 2 * \
         (Mp / (3 * M_sun)) ** (1.0 / 3)
     max_r_estimate = 1.0 / (1.0 / Rp + KB_OVER_G_AMU * jnp.median(T_profile) *
                             jnp.log(P_profile[0] / sc[SC_REF_PRESSURE]) /
                             (Mp * jnp.mean(mu_profile)))
-    unbound = (max_r_estimate < 0) | (max_r_estimate > R_hill)
+    unbound = (max_r_estimate < 0) | (max_r_estimate > R_hill) | (jnp.min(inv_r) <= 0)
     return radii, dr, unbound
 
 
